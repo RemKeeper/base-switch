@@ -1,0 +1,33 @@
+{
+  "listen": {
+    "host": "0.0.0.0",
+    "port": 28080
+  },
+  "database": {
+    "path": "./data/providers.db"
+  },
+  "auth": {
+    "enabled": false,
+    "keys": [
+      "sk-your-proxy-key-here"
+    ],
+    "_comment": "将 enabled 设为 true 并设置一个或多个 keys 以启用前置 API Key 鉴权"
+  },
+  "management": {
+    "enabled": true,
+    "keys": [
+      "sk-admin-management-key"
+    ],
+    "_comment": "管理 API 专用鉴权密钥，用于 /admin/providers 等管理端点。请务必修改默认密钥！"
+  },
+  "providers": [
+    {
+      "name": "example-provider",
+      "base_url": "https://api.example.com",
+      "api_key": "sk-your-provider-api-key",
+      "models": ["gpt-4o", "gpt-4o-mini"],
+      "enabled": true,
+      "_comment": "models 为空时将自动调用 /v1/models 发现模型"
+    }
+  ]
+}

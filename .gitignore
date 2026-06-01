@@ -1,0 +1,19 @@
+# 二进制文件
+baseSwitch.exe
+baseSwitch
+
+# 配置文件（含敏感信息）
+config.json
+
+# 数据库文件
+data/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
