@@ -8,8 +8,10 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"baseSwitch/internal/config"
+	"baseSwitch/internal/plugins/tokenusage"
 	"baseSwitch/internal/provider"
 	"baseSwitch/internal/proxy"
 	"baseSwitch/internal/storage"
@@ -56,8 +58,16 @@ func main() {
 	// 5. 创建 Provider 管理器
 	mgr := provider.NewManager(store)
 
+	// 初始化 token 用量统计插件
+	usagePlugin, err := tokenusage.New("./data/token_usage.db")
+	if err != nil {
+		log.Fatalf("❌ 初始化 token 用量统计插件失败: %v", err)
+	}
+	defer usagePlugin.Close()
+	log.Println("📊 Token 用量统计插件已启用")
+
 	// 6. 创建代理处理器
-	handler := proxy.NewHandler(mgr, &cfg.Auth, &cfg.Management)
+	handler := proxy.NewHandler(mgr, &cfg.Auth, &cfg.Management, usagePlugin)
 
 	// 鉴权状态提示
 	if cfg.Auth.IsAuthEnabled() {
@@ -90,10 +100,20 @@ func main() {
 		log.Println("   📋 所有 Provider 均已配置模型，跳过自动发现")
 	}
 
+	// 启动 Provider 模型列表自动刷新任务
+	stopRefresh := make(chan struct{})
+	if cfg.ModelRefresh.IsModelRefreshEnabled() {
+		interval := time.Duration(cfg.ModelRefresh.IntervalSeconds) * time.Second
+		log.Printf("🔄 Provider 模型列表自动刷新已启用，间隔: %s", interval)
+		go startModelRefreshLoop(mgr, handler.FetchProviderModels, interval, stopRefresh)
+	} else {
+		log.Println("ℹ️  Provider 模型列表自动刷新未启用")
+	}
+
 	// 8. 启动 HTTP 服务
 	server := &http.Server{
 		Addr:    cfg.ListenAddr(),
-		Handler: handler,
+		Handler: handler.Router(),
 	}
 
 	// 优雅关闭
@@ -102,6 +122,7 @@ func main() {
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		sig := <-sigCh
 		log.Printf("🛑 收到信号 %v，正在关闭服务...", sig)
+		close(stopRefresh)
 		server.Close()
 	}()
 
@@ -132,4 +153,29 @@ func printBanner() {
 ║        🤖 AI Reverse Proxy 🤖           ║
 ║    多 Provider 聚合反向代理服务          ║
 ╚══════════════════════════════════════════╝`)
+}
+
+// startModelRefreshLoop 按固定间隔刷新所有已启用 Provider 的模型列表
+func startModelRefreshLoop(mgr *provider.Manager, fetcher provider.ModelFetcher, interval time.Duration, stop <-chan struct{}) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			log.Println("🔄 开始自动刷新 Provider 模型列表...")
+			success, failed, errors, err := mgr.RefreshProviderModels(fetcher)
+			if err != nil {
+				log.Printf("⚠️  自动刷新 Provider 模型列表失败: %v", err)
+				continue
+			}
+			log.Printf("✅ 自动刷新完成，成功: %d，失败: %d", success, failed)
+			for _, item := range errors {
+				log.Printf("   ⚠️  %s", item)
+			}
+		case <-stop:
+			log.Println("🛑 Provider 模型列表自动刷新任务已停止")
+			return
+		}
+	}
 }

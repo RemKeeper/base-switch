@@ -38,13 +38,20 @@ type ManagementConfig struct {
 	Keys    []string `json:"keys"`
 }
 
+// ModelRefreshConfig Provider 模型列表自动刷新配置
+type ModelRefreshConfig struct {
+	Enabled         bool `json:"enabled"`
+	IntervalSeconds int  `json:"interval_seconds"`
+}
+
 // AppConfig 应用总配置
 type AppConfig struct {
-	Listen     ListenConfig     `json:"listen"`
-	Database   DatabaseConfig   `json:"database"`
-	Auth       AuthConfig       `json:"auth"`
-	Management ManagementConfig `json:"management"`
-	Providers  []ProviderConfig `json:"providers"`
+	Listen       ListenConfig       `json:"listen"`
+	Database     DatabaseConfig     `json:"database"`
+	Auth         AuthConfig         `json:"auth"`
+	Management   ManagementConfig   `json:"management"`
+	ModelRefresh ModelRefreshConfig `json:"model_refresh"`
+	Providers    []ProviderConfig   `json:"providers"`
 }
 
 // Load 从文件加载配置
@@ -68,6 +75,9 @@ func Load(path string) (*AppConfig, error) {
 	}
 	if cfg.Database.Path == "" {
 		cfg.Database.Path = "./data/providers.db"
+	}
+	if cfg.ModelRefresh.IntervalSeconds <= 0 {
+		cfg.ModelRefresh.IntervalSeconds = 3600
 	}
 
 	return &cfg, nil
@@ -106,4 +116,9 @@ func (m *ManagementConfig) IsValidManagementKey(key string) bool {
 		}
 	}
 	return false
+}
+
+// IsModelRefreshEnabled 判断自动刷新是否启用
+func (m *ModelRefreshConfig) IsModelRefreshEnabled() bool {
+	return m.Enabled && m.IntervalSeconds > 0
 }

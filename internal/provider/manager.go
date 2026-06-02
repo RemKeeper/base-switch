@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"fmt"
 	"sync"
 
 	"baseSwitch/internal/storage"
@@ -60,6 +61,41 @@ func (m *Manager) AutoDiscoverModels(fetcher ModelFetcher) (int, error) {
 	return discovered, nil
 }
 
+// RefreshProviderModels 刷新所有已启用 Provider 的模型列表
+// 返回成功刷新数量、失败数量和失败详情
+func (m *Manager) RefreshProviderModels(fetcher ModelFetcher) (int, int, []string, error) {
+	providers, err := m.store.ListEnabledProviders()
+	if err != nil {
+		return 0, 0, nil, err
+	}
+
+	success := 0
+	failed := 0
+	errors := []string{}
+
+	for _, p := range providers {
+		models, err := fetcher(p.BaseURL, p.APIKey)
+		if err != nil {
+			failed++
+			errors = append(errors, fmt.Sprintf("%s: %v", p.Name, err))
+			continue
+		}
+		if len(models) == 0 {
+			failed++
+			errors = append(errors, fmt.Sprintf("%s: 未发现任何模型", p.Name))
+			continue
+		}
+		if err := m.store.UpdateProviderModels(p.Name, models); err != nil {
+			failed++
+			errors = append(errors, fmt.Sprintf("%s: %v", p.Name, err))
+			continue
+		}
+		success++
+	}
+
+	return success, failed, errors, nil
+}
+
 // GetStore 暴露底层存储（供 proxy 层模型获取使用）
 func (m *Manager) GetStore() *storage.Store {
 	return m.store
@@ -77,8 +113,19 @@ func (m *Manager) GetProviderByName(name string) (*storage.Provider, error) {
 	return m.store.GetProviderByName(name)
 }
 
-// AddProvider 新增 Provider
-func (m *Manager) AddProvider(name, baseURL, apiKey string, models []string, enabled bool) error {
+// AddProvider 新增 Provider；models 为空时自动调用 Provider 的 /v1/models 发现模型
+func (m *Manager) AddProvider(name, baseURL, apiKey string, models []string, enabled bool, fetcher ModelFetcher) error {
+	if len(models) == 0 && fetcher != nil {
+		discoveredModels, err := fetcher(baseURL, apiKey)
+		if err != nil {
+			return fmt.Errorf("自动发现 provider %s 模型失败: %w", name, err)
+		}
+		if len(discoveredModels) == 0 {
+			return fmt.Errorf("自动发现 provider %s 模型失败: 未发现任何模型", name)
+		}
+		models = discoveredModels
+	}
+
 	return m.store.InsertProvider(name, baseURL, apiKey, models, enabled)
 }
 

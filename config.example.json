@@ -20,6 +20,11 @@
     ],
     "_comment": "管理 API 专用鉴权密钥，用于 /admin/providers 等管理端点。请务必修改默认密钥！"
   },
+  "model_refresh": {
+    "enabled": true,
+    "interval_seconds": 3600,
+    "_comment": "是否定时刷新所有已启用 Provider 的模型列表，interval_seconds 为刷新间隔秒数"
+  },
   "providers": [
     {
       "name": "example-provider",

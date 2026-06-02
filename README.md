@@ -7,11 +7,14 @@
 - **多 Provider 聚合** — 支持同时接入多个 AI 供应商，统一对外暴露 `/v1/models` 和 `/v1/chat/completions`
 - **OpenAI 兼容** — 请求和响应格式完全兼容 OpenAI API，无缝替换
 - **自动模型发现** — models 为空的 Provider 启动时自动调用 `/v1/models` 发现可用模型
+- **自动模型刷新** — 可配置固定时间间隔，定时刷新所有已启用 Provider 的模型列表
 - **流式响应支持** — 完整支持 SSE (Server-Sent Events) 流式输出
 - **前置 API Key 鉴权** — 可选的 Bearer Token 鉴权，保护代理入口
 - **管理 API** — 通过独立的 API Key 在线管理 Provider，支持增删改查
+- **Token 用量统计** — 插件式统计各 Provider / 模型的请求次数和 token 消耗
+- **Gin 路由管理** — 基于 Gin Router 进行路由分组、中间件鉴权和 CORS 管理
 - **Chrome 指纹伪装** — 基于 `req/v3` 的 Chrome 指纹模拟，降低被上游拦截风险
-- **SQLite 持久化** — Provider 配置自动存入 SQLite，重启不丢失
+- **SQLite + GORM 持久化** — Provider 配置与 Token 用量统计基于 GORM + SQLite 持久化，重启不丢失
 - **优雅关闭** — 支持 SIGINT / SIGTERM 信号优雅退出
 
 ## 📦 快速开始
@@ -59,7 +62,22 @@ go build -o baseSwitch .
 | `auth.keys` | []string | 允许的代理 API Key 列表 |
 | `management.enabled` | bool | 是否启用管理 API |
 | `management.keys` | []string | 管理 API Key 列表（独立于代理鉴权） |
+| `model_refresh.enabled` | bool | 是否启用 Provider 模型列表自动刷新 |
+| `model_refresh.interval_seconds` | int | 自动刷新间隔，单位秒，默认 `3600` |
 | `providers` | []object | AI Provider 列表 |
+
+### 模型自动刷新配置
+
+```json
+{
+  "model_refresh": {
+    "enabled": true,
+    "interval_seconds": 3600
+  }
+}
+```
+
+启用后，服务会按 `interval_seconds` 指定的间隔，定时调用所有已启用 Provider 的 `/v1/models`，并将最新模型列表写入 SQLite。刷新失败的 Provider 会被跳过，不影响其他 Provider 和代理服务。
 
 ### Provider 配置
 
@@ -78,7 +96,7 @@ go build -o baseSwitch .
 | `name` | Provider 唯一标识，用于模型路由 |
 | `base_url` | Provider API 基础地址 |
 | `api_key` | Provider API Key |
-| `models` | 模型列表，为空时自动发现 |
+| `models` | 模型列表，为空时启动或通过管理 API 新增 Provider 时自动发现 |
 | `enabled` | 是否启用 |
 
 ## 🔌 API 端点
@@ -88,6 +106,7 @@ go build -o baseSwitch .
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `GET` | `/health` | 健康检查（无需鉴权） |
+| `GET` | `/doc.json` | OpenAPI 3.1 文档，仅允许 `127.0.0.1` 访问 |
 | `GET` | `/v1/models` | 获取所有可用模型列表 |
 | `POST` | `/v1/chat/completions` | Chat Completions（OpenAI 兼容） |
 | `*` | `/v1/*` | 通用代理转发 |
@@ -101,6 +120,34 @@ go build -o baseSwitch .
 | `GET` | `/admin/providers/:name` | 获取指定 Provider |
 | `PUT` | `/admin/providers/:name` | 更新指定 Provider |
 | `DELETE` | `/admin/providers/:name` | 删除指定 Provider |
+| `GET` | `/admin/usage/summary` | 查询 token 消耗聚合统计 |
+| `GET` | `/admin/usage/records` | 查询 token 消耗明细记录 |
+
+### Token 用量统计
+
+Token 用量统计以插件形式实现，数据单独存储在 `./data/token_usage.db`，与 Provider 主存储分离。
+
+当前会从 OpenAI 兼容响应中的 `usage` 字段读取：
+
+- `prompt_tokens`
+- `completion_tokens`
+- `total_tokens`
+
+非流式响应直接解析 JSON；流式响应会尝试解析 SSE 中包含 `usage` 的 chunk（需要上游支持 `stream_options.include_usage`）。若未返回 usage，会记录一次 0 token 请求，用于统计请求次数。
+
+```bash
+# 按 Provider + Model 查询聚合统计
+curl "http://localhost:28080/admin/usage/summary?group_by=model" \
+  -H "Authorization: Bearer sk-admin-management-key"
+
+# 仅按 Provider 聚合
+curl "http://localhost:28080/admin/usage/summary?group_by=provider" \
+  -H "Authorization: Bearer sk-admin-management-key"
+
+# 查询最近 100 条明细
+curl "http://localhost:28080/admin/usage/records?limit=100" \
+  -H "Authorization: Bearer sk-admin-management-key"
+```
 
 ### 模型路由格式
 
@@ -158,6 +205,18 @@ curl -X POST http://localhost:28080/admin/providers \
     "enabled": true
   }'
 
+# 新增 Provider 并自动发现模型（models 传空数组）
+curl -X POST http://localhost:28080/admin/providers \
+  -H "Authorization: Bearer sk-admin-management-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "auto-discover-provider",
+    "base_url": "https://api.example.com",
+    "api_key": "sk-xxxxxxxx",
+    "models": [],
+    "enabled": true
+  }'
+
 # 列出所有 Provider
 curl http://localhost:28080/admin/providers \
   -H "Authorization: Bearer sk-admin-management-key"
@@ -193,8 +252,10 @@ baseSwitch/
     │   └── config.go            # 配置加载与结构定义
     ├── provider/
     │   └── manager.go           # Provider 管理器
+    ├── plugins/
+    │   └── tokenusage/           # Token 用量统计插件
     ├── proxy/
-    │   └── handler.go           # HTTP 代理处理器、路由与鉴权
+    │   └── handler.go           # Gin 路由、HTTP 代理处理器与鉴权中间件
     └── storage/
         └── storage.go           # SQLite 存储层、模型缓存
 ```
