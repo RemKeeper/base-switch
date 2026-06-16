@@ -138,6 +138,7 @@ func main() {
 	log.Println("      GET    /admin/providers/:name  - 获取指定 Provider")
 	log.Println("      PUT    /admin/providers/:name  - 更新指定 Provider")
 	log.Println("      DELETE /admin/providers/:name  - 删除指定 Provider")
+	log.Println("      POST   /admin/models/check     - 检测模型存活状态")
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("❌ 服务启动失败: %v", err)

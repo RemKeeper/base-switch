@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -76,6 +77,8 @@ func (h *Handler) buildRouter() *gin.Engine {
 		usage.GET("/summary", h.handleAdminUsageSummary)
 		usage.GET("/records", h.handleAdminUsageRecords)
 	}
+	models := admin.Group("/models")
+	models.POST("/check", h.handleAdminCheckModels)
 
 	v1 := r.Group("/v1", h.proxyAuthMiddleware())
 	{
@@ -537,6 +540,16 @@ func (h *Handler) handleOpenAPIDoc(c *gin.Context) {
 					"responses": adminResponses(schemaRef("#/components/schemas/UsageRecordListResponse")),
 				},
 			},
+			"/admin/models/check": gin.H{
+				"post": gin.H{
+					"tags":        []string{"Admin"},
+					"summary":     "检测模型存活状态",
+					"operationId": "checkModels",
+					"security":    []gin.H{{"ManagementBearerAuth": []string{}}},
+					"requestBody": gin.H{"required": false, "content": jsonContent(schemaRef("#/components/schemas/AdminModelCheckRequest"))},
+					"responses":   adminResponses(schemaRef("#/components/schemas/ModelCheckListResponse")),
+				},
+			},
 		},
 		"components": gin.H{
 			"securitySchemes": gin.H{
@@ -554,6 +567,23 @@ type AdminProviderRequest struct {
 	APIKey  string   `json:"api_key"`
 	Models  []string `json:"models"`
 	Enabled bool     `json:"enabled"`
+}
+
+type AdminModelCheckRequest struct {
+	Provider       string   `json:"provider"`
+	Models         []string `json:"models"`
+	Prompt         string   `json:"prompt"`
+	TimeoutSeconds int      `json:"timeout_seconds"`
+}
+
+type AdminModelCheckResult struct {
+	Provider   string `json:"provider"`
+	Model      string `json:"model"`
+	ModelID    string `json:"model_id"`
+	Alive      bool   `json:"alive"`
+	StatusCode int    `json:"status_code,omitempty"`
+	LatencyMS  int64  `json:"latency_ms"`
+	Error      string `json:"error,omitempty"`
 }
 
 func (h *Handler) handleAdminListProviders(c *gin.Context) {
@@ -690,6 +720,115 @@ func (h *Handler) handleAdminUsageRecords(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"object": "list", "data": items})
+}
+
+func (h *Handler) handleAdminCheckModels(c *gin.Context) {
+	var req AdminModelCheckRequest
+	if err := c.ShouldBindJSON(&req); err != nil && err != io.EOF {
+		c.JSON(http.StatusBadRequest, errorResponse("请求体解析失败: "+err.Error()))
+		return
+	}
+
+	timeoutSeconds := req.TimeoutSeconds
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = 20
+	}
+	if timeoutSeconds > 120 {
+		timeoutSeconds = 120
+	}
+	prompt := strings.TrimSpace(req.Prompt)
+	if prompt == "" {
+		prompt = "ping"
+	}
+
+	providers, err := h.providersForModelCheck(strings.TrimSpace(req.Provider))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("获取 Provider 失败: "+err.Error()))
+		return
+	}
+	if len(providers) == 0 {
+		c.JSON(http.StatusNotFound, errorResponse("没有可检测的 Provider"))
+		return
+	}
+
+	modelFilter := map[string]bool{}
+	for _, model := range req.Models {
+		model = strings.TrimSpace(model)
+		if model != "" {
+			modelFilter[model] = true
+		}
+	}
+
+	results := []AdminModelCheckResult{}
+	for _, p := range providers {
+		if !p.Enabled {
+			continue
+		}
+		for _, model := range splitModels(p.Models) {
+			modelID := p.Name + "/" + model
+			if len(modelFilter) > 0 && !modelFilter[model] && !modelFilter[modelID] {
+				continue
+			}
+			results = append(results, h.checkSingleModel(c.Request.Context(), p, model, prompt, timeoutSeconds))
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"object": "list", "data": results})
+}
+
+func (h *Handler) providersForModelCheck(providerName string) ([]storage.Provider, error) {
+	if providerName == "" {
+		return h.manager.ListAllProviders()
+	}
+	p, err := h.manager.GetProviderByName(providerName)
+	if err != nil || p == nil {
+		return nil, err
+	}
+	return []storage.Provider{*p}, nil
+}
+
+func (h *Handler) checkSingleModel(parent context.Context, p storage.Provider, model, prompt string, timeoutSeconds int) AdminModelCheckResult {
+	result := AdminModelCheckResult{Provider: p.Name, Model: model, ModelID: p.Name + "/" + model}
+	ctx, cancel := context.WithTimeout(parent, time.Duration(timeoutSeconds)*time.Second)
+	defer cancel()
+
+	body := gin.H{
+		"model":      model,
+		"stream":     false,
+		"max_tokens": 1,
+		"messages": []gin.H{
+			{"role": "user", "content": prompt},
+		},
+	}
+
+	start := time.Now()
+	resp, err := h.client.R().
+		SetContext(ctx).
+		SetHeader("Authorization", "Bearer "+p.APIKey).
+		SetBody(body).
+		Post(strings.TrimRight(p.BaseURL, "/") + "/v1/chat/completions")
+	result.LatencyMS = time.Since(start).Milliseconds()
+
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	defer resp.Body.Close()
+
+	result.StatusCode = resp.StatusCode
+	result.Alive = resp.IsSuccessState()
+	if !result.Alive {
+		result.Error = truncateForResponse(resp.String(), 300)
+	}
+	return result
+}
+
+func truncateForResponse(value string, maxLen int) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= maxLen {
+		return value
+	}
+	return value[:maxLen] + "..."
 }
 
 func validateProviderRequest(req AdminProviderRequest, requireName bool) error {
@@ -854,6 +993,34 @@ func openAPISchemas() gin.H {
 		"MessageResponse": gin.H{
 			"type":       "object",
 			"properties": gin.H{"message": gin.H{"type": "string"}},
+		},
+		"AdminModelCheckRequest": gin.H{
+			"type": "object",
+			"properties": gin.H{
+				"provider":        gin.H{"type": "string", "description": "可选，仅检测指定 Provider", "example": "openai"},
+				"models":          gin.H{"type": "array", "items": gin.H{"type": "string"}, "description": "可选，支持模型名或 Provider/model", "example": []string{"openai/gpt-4o"}},
+				"prompt":          gin.H{"type": "string", "description": "可选，探活提示词", "example": "ping"},
+				"timeout_seconds": gin.H{"type": "integer", "description": "单模型超时时间，默认 20，最大 120", "example": 20},
+			},
+		},
+		"ModelCheckResult": gin.H{
+			"type": "object",
+			"properties": gin.H{
+				"provider":    gin.H{"type": "string"},
+				"model":       gin.H{"type": "string"},
+				"model_id":    gin.H{"type": "string", "example": "openai/gpt-4o"},
+				"alive":       gin.H{"type": "boolean"},
+				"status_code": gin.H{"type": "integer"},
+				"latency_ms":  gin.H{"type": "integer", "format": "int64"},
+				"error":       gin.H{"type": "string"},
+			},
+		},
+		"ModelCheckListResponse": gin.H{
+			"type": "object",
+			"properties": gin.H{
+				"object": gin.H{"type": "string", "example": "list"},
+				"data":   gin.H{"type": "array", "items": schemaRef("#/components/schemas/ModelCheckResult")},
+			},
 		},
 		"UsageSummary": gin.H{
 			"type": "object",

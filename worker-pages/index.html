@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>baseSwitch 管理面板</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main class="shell">
+    <section class="hero card">
+      <div>
+        <p class="eyebrow">baseSwitch Admin</p>
+        <h1>模型与 Provider 管理面板</h1>
+        <p class="muted">可部署到 Cloudflare Pages / Workers Pages 的纯静态管理页。</p>
+      </div>
+      <div class="status" id="apiStatus">未连接</div>
+    </section>
+
+    <section class="grid two">
+      <form class="card stack" id="settingsForm">
+        <div class="section-title">
+          <h2>连接设置</h2>
+          <button type="submit">保存并连接</button>
+        </div>
+        <label>API 地址
+          <input id="apiBase" placeholder="https://your-base-switch.example.com" required />
+        </label>
+        <label>管理 API Key
+          <input id="adminKey" type="password" placeholder="sk-admin-management-key" required />
+        </label>
+        <p class="hint">所有请求使用 <code>Authorization: Bearer &lt;key&gt;</code>。配置保存在当前浏览器。</p>
+      </form>
+
+      <section class="card stack">
+        <div class="section-title">
+          <h2>概览</h2>
+          <button id="refreshAll" type="button">刷新</button>
+        </div>
+        <div class="metrics">
+          <div><strong id="providerCount">-</strong><span>Providers</span></div>
+          <div><strong id="modelCount">-</strong><span>Models</span></div>
+          <div><strong id="aliveCount">-</strong><span>Alive</span></div>
+        </div>
+      </section>
+    </section>
+
+    <section class="card stack">
+      <div class="section-title">
+        <h2>Provider 管理</h2>
+        <button id="newProvider" type="button">新增 Provider</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>名称</th><th>Base URL</th><th>模型数</th><th>状态</th><th>操作</th></tr></thead>
+          <tbody id="providersTable"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="grid two">
+      <section class="card stack">
+        <div class="section-title">
+          <h2>模型存活检测</h2>
+          <button id="checkModels" type="button">开始检测</button>
+        </div>
+        <div class="inline-fields">
+          <label>Provider
+            <select id="checkProvider"><option value="">全部启用 Provider</option></select>
+          </label>
+          <label>超时秒数
+            <input id="timeoutSeconds" type="number" min="1" max="120" value="20" />
+          </label>
+        </div>
+        <label>指定模型（可选，每行一个，支持 Provider/model）
+          <textarea id="checkModelsInput" rows="4" placeholder="openai/gpt-4o"></textarea>
+        </label>
+        <div id="checkResults" class="result-list"></div>
+      </section>
+
+      <section class="card stack">
+        <div class="section-title">
+          <h2>Token 用量</h2>
+          <button id="loadUsage" type="button">加载统计</button>
+        </div>
+        <div id="usageSummary" class="result-list"></div>
+      </section>
+    </section>
+  </main>
+
+  <dialog id="providerDialog">
+    <form method="dialog" class="modal stack" id="providerForm">
+      <div class="section-title">
+        <h2 id="dialogTitle">Provider</h2>
+        <button class="ghost" value="cancel" type="submit">关闭</button>
+      </div>
+      <input id="editingName" type="hidden" />
+      <label>名称
+        <input id="providerName" required placeholder="openai" />
+      </label>
+      <label>Base URL
+        <input id="providerBaseUrl" required placeholder="https://api.openai.com" />
+      </label>
+      <label>API Key
+        <input id="providerApiKey" required placeholder="sk-..." />
+      </label>
+      <label>模型列表（每行一个，留空新增时自动发现）
+        <textarea id="providerModels" rows="6" placeholder="gpt-4o&#10;gpt-4o-mini"></textarea>
+      </label>
+      <label class="checkline"><input id="providerEnabled" type="checkbox" checked /> 启用</label>
+      <div class="actions">
+        <button class="danger" id="deleteProvider" type="button">删除</button>
+        <button id="saveProvider" type="submit" value="default">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="./app.js"></script>
+</body>
+</html>

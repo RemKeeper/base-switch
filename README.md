@@ -11,6 +11,8 @@
 - **流式响应支持** — 完整支持 SSE (Server-Sent Events) 流式输出
 - **前置 API Key 鉴权** — 可选的 Bearer Token 鉴权，保护代理入口
 - **管理 API** — 通过独立的 API Key 在线管理 Provider，支持增删改查
+- **Worker Pages 管理面板** — `worker-pages/` 提供可直接部署的静态管理页
+- **模型存活检测** — 通过管理 API 批量检测各 Provider 模型是否可用
 - **Token 用量统计** — 插件式统计各 Provider / 模型的请求次数和 token 消耗
 - **Gin 路由管理** — 基于 Gin Router 进行路由分组、中间件鉴权和 CORS 管理
 - **Chrome 指纹伪装** — 基于 `req/v3` 的 Chrome 指纹模拟，降低被上游拦截风险
@@ -120,8 +122,35 @@ go build -o baseSwitch .
 | `GET` | `/admin/providers/:name` | 获取指定 Provider |
 | `PUT` | `/admin/providers/:name` | 更新指定 Provider |
 | `DELETE` | `/admin/providers/:name` | 删除指定 Provider |
+| `POST` | `/admin/models/check` | 检测模型存活状态 |
 | `GET` | `/admin/usage/summary` | 查询 token 消耗聚合统计 |
 | `GET` | `/admin/usage/records` | 查询 token 消耗明细记录 |
+
+### Worker Pages 管理面板
+
+项目内置纯静态管理页，可部署到 Cloudflare Pages / Workers Pages：
+
+1. 在 Cloudflare Pages 中创建项目。
+2. 构建命令留空。
+3. 输出目录填写 `worker-pages`。
+4. 部署后打开页面，填写 baseSwitch 后端地址和管理 API Key。
+
+页面支持 Provider 增删改查、Token 用量统计和模型存活检测。管理 API Key 保存在当前浏览器的 `localStorage`。
+
+### 模型存活检测
+
+模型存活检测会对目标上游 `/v1/chat/completions` 发送最小非流式请求，可能产生少量 token 消耗。
+
+```bash
+curl -X POST http://localhost:28080/admin/models/check \
+  -H "Authorization: Bearer sk-admin-management-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "example-provider",
+    "models": ["example-provider/gpt-4o"],
+    "timeout_seconds": 20
+  }'
+```
 
 ### Token 用量统计
 
