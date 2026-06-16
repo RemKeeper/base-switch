@@ -12,10 +12,11 @@
 
 - Provider 列表、创建、编辑、删除
 - Token 用量聚合统计
-- 模型存活检测，调用后端 `/admin/models/check`
+- 模型存活检测，调用后端 `/admin/models/check` 并流式读取 NDJSON 结果
 
 ## 注意
 
 - baseSwitch 后端已开启 CORS，页面可跨域访问管理 API。
 - 管理 API Key 会保存在当前浏览器的 `localStorage`。
 - 模型探活会对上游 `/v1/chat/completions` 发送最小非流式请求，可能产生少量 token 消耗。
+- 探活接口会逐个检测模型并逐行返回结果，不会并发请求上游。

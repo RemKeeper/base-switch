@@ -150,25 +150,59 @@ async function deleteProvider() {
 async function checkModels() {
   $('checkModels').disabled = true;
   $('checkResults').innerHTML = '<div class="result-item">检测中...</div>';
+  state.checkResults = [];
   try {
-    const data = await api('/admin/models/check', {
+    const response = await fetch(`${state.apiBase}/admin/models/check`, {
       method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${state.adminKey}`
+      },
       body: JSON.stringify({
         provider: $('checkProvider').value,
         models: lines($('checkModelsInput').value),
         timeout_seconds: Number($('timeoutSeconds').value || 20)
       })
     });
-    state.checkResults = data.data || [];
-    renderCheckResults();
+    if (!response.ok) {
+      const text = await response.text();
+      let data = null;
+      try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
+      throw new Error(data?.error?.message || data?.message || text || `HTTP ${response.status}`);
+    }
+    await readModelCheckStream(response);
     updateMetrics();
     toast('模型检测完成');
   } catch (error) {
-    $('checkResults').innerHTML = '';
+    if (!state.checkResults.length) $('checkResults').innerHTML = '';
     toast(error.message);
   } finally {
     $('checkModels').disabled = false;
   }
+}
+
+async function readModelCheckStream(response) {
+  if (!response.body) throw new Error('当前浏览器不支持流式读取响应');
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const line of lines) appendModelCheckLine(line);
+    if (done) break;
+  }
+  appendModelCheckLine(buffer);
+}
+
+function appendModelCheckLine(line) {
+  line = line.trim();
+  if (!line) return;
+  state.checkResults.push(JSON.parse(line));
+  renderCheckResults();
+  updateMetrics();
 }
 
 function renderCheckResults() {

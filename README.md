@@ -122,7 +122,7 @@ go build -o baseSwitch .
 | `GET` | `/admin/providers/:name` | 获取指定 Provider |
 | `PUT` | `/admin/providers/:name` | 更新指定 Provider |
 | `DELETE` | `/admin/providers/:name` | 删除指定 Provider |
-| `POST` | `/admin/models/check` | 检测模型存活状态 |
+| `POST` | `/admin/models/check` | 流式检测模型存活状态，返回 NDJSON |
 | `GET` | `/admin/usage/summary` | 查询 token 消耗聚合统计 |
 | `GET` | `/admin/usage/records` | 查询 token 消耗明细记录 |
 
@@ -139,7 +139,7 @@ go build -o baseSwitch .
 
 ### 模型存活检测
 
-模型存活检测会对目标上游 `/v1/chat/completions` 发送最小非流式请求，可能产生少量 token 消耗。
+模型存活检测会对目标上游 `/v1/chat/completions` 发送最小非流式请求，可能产生少量 token 消耗。接口按顺序逐个检测模型，每完成一个模型立即返回一行 NDJSON，避免某个模型失败导致前面已完成的结果无法获取，也避免并发触发上游 RPM 限制。
 
 ```bash
 curl -X POST http://localhost:28080/admin/models/check \

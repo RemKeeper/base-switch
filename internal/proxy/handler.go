@@ -543,11 +543,19 @@ func (h *Handler) handleOpenAPIDoc(c *gin.Context) {
 			"/admin/models/check": gin.H{
 				"post": gin.H{
 					"tags":        []string{"Admin"},
-					"summary":     "检测模型存活状态",
+					"summary":     "流式检测模型存活状态",
+					"description": "按顺序逐个检测模型，每完成一个模型立即返回一行 NDJSON。",
 					"operationId": "checkModels",
 					"security":    []gin.H{{"ManagementBearerAuth": []string{}}},
 					"requestBody": gin.H{"required": false, "content": jsonContent(schemaRef("#/components/schemas/AdminModelCheckRequest"))},
-					"responses":   adminResponses(schemaRef("#/components/schemas/ModelCheckListResponse")),
+					"responses": gin.H{
+						"200": gin.H{"description": "NDJSON 流，每行一个 ModelCheckResult", "content": gin.H{"application/x-ndjson": gin.H{"schema": schemaRef("#/components/schemas/ModelCheckResult")}}},
+						"400": gin.H{"description": "请求错误", "content": jsonContent(schemaRef("#/components/schemas/ErrorResponse"))},
+						"401": gin.H{"description": "管理 API Key 无效", "content": jsonContent(schemaRef("#/components/schemas/ErrorResponse"))},
+						"403": gin.H{"description": "管理 API 未启用", "content": jsonContent(schemaRef("#/components/schemas/ErrorResponse"))},
+						"404": gin.H{"description": "资源不存在", "content": jsonContent(schemaRef("#/components/schemas/ErrorResponse"))},
+						"500": gin.H{"description": "服务内部错误", "content": jsonContent(schemaRef("#/components/schemas/ErrorResponse"))},
+					},
 				},
 			},
 		},
@@ -750,6 +758,11 @@ func (h *Handler) handleAdminCheckModels(c *gin.Context) {
 		c.JSON(http.StatusNotFound, errorResponse("没有可检测的 Provider"))
 		return
 	}
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, errorResponse("当前响应写入器不支持流式返回"))
+		return
+	}
 
 	modelFilter := map[string]bool{}
 	for _, model := range req.Models {
@@ -759,7 +772,12 @@ func (h *Handler) handleAdminCheckModels(c *gin.Context) {
 		}
 	}
 
-	results := []AdminModelCheckResult{}
+	c.Header("Content-Type", "application/x-ndjson; charset=utf-8")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("X-Accel-Buffering", "no")
+	c.Status(http.StatusOK)
+	encoder := json.NewEncoder(c.Writer)
+
 	for _, p := range providers {
 		if !p.Enabled {
 			continue
@@ -769,11 +787,15 @@ func (h *Handler) handleAdminCheckModels(c *gin.Context) {
 			if len(modelFilter) > 0 && !modelFilter[model] && !modelFilter[modelID] {
 				continue
 			}
-			results = append(results, h.checkSingleModel(c.Request.Context(), p, model, prompt, timeoutSeconds))
+			if err := encoder.Encode(h.checkSingleModel(c.Request.Context(), p, model, prompt, timeoutSeconds)); err != nil {
+				return
+			}
+			flusher.Flush()
+			if c.Request.Context().Err() != nil {
+				return
+			}
 		}
 	}
-
-	c.JSON(http.StatusOK, gin.H{"object": "list", "data": results})
 }
 
 func (h *Handler) providersForModelCheck(providerName string) ([]storage.Provider, error) {
@@ -1013,13 +1035,6 @@ func openAPISchemas() gin.H {
 				"status_code": gin.H{"type": "integer"},
 				"latency_ms":  gin.H{"type": "integer", "format": "int64"},
 				"error":       gin.H{"type": "string"},
-			},
-		},
-		"ModelCheckListResponse": gin.H{
-			"type": "object",
-			"properties": gin.H{
-				"object": gin.H{"type": "string", "example": "list"},
-				"data":   gin.H{"type": "array", "items": schemaRef("#/components/schemas/ModelCheckResult")},
 			},
 		},
 		"UsageSummary": gin.H{
