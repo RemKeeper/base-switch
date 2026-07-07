@@ -88,6 +88,7 @@ go build -o baseSwitch .
   "name": "my-provider",
   "base_url": "https://api.example.com",
   "api_key": "sk-xxxxxxxx",
+  "proxy_url": "http://127.0.0.1:7890",
   "models": ["gpt-4o", "gpt-4o-mini"],
   "enabled": true
 }
@@ -98,6 +99,7 @@ go build -o baseSwitch .
 | `name` | Provider 唯一标识，用于模型路由 |
 | `base_url` | Provider API 基础地址 |
 | `api_key` | Provider API Key |
+| `proxy_url` | 可选，上游请求代理地址；为空则直连 |
 | `models` | 模型列表，为空时启动或通过管理 API 新增 Provider 时自动发现 |
 | `enabled` | 是否启用 |
 

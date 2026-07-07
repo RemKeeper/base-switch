@@ -52,7 +52,7 @@
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>名称</th><th>Base URL</th><th>模型数</th><th>状态</th><th>操作</th></tr></thead>
+          <thead><tr><th>名称</th><th>Base URL</th><th>代理</th><th>模型数</th><th>状态</th><th>操作</th></tr></thead>
           <tbody id="providersTable"></tbody>
         </table>
       </div>
@@ -102,7 +102,10 @@
         <input id="providerBaseUrl" required placeholder="https://api.openai.com" />
       </label>
       <label>API Key
-        <input id="providerApiKey" required placeholder="sk-..." />
+        <input id="providerApiKey" placeholder="编辑时留空表示保留原 API Key" />
+      </label>
+      <label>代理地址（可选）
+        <input id="providerProxyUrl" placeholder="http://127.0.0.1:7890" />
       </label>
       <label>模型列表（每行一个，留空新增时自动发现）
         <textarea id="providerModels" rows="6" placeholder="gpt-4o&#10;gpt-4o-mini"></textarea>

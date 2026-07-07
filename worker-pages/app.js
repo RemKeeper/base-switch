@@ -73,6 +73,7 @@ function renderProviders() {
     <tr>
       <td><strong>${escapeHtml(provider.name)}</strong><br><small>${escapeHtml(provider.api_key || '')}</small></td>
       <td>${escapeHtml(provider.base_url)}</td>
+      <td>${provider.proxy_url ? `<span class="badge on">已配置</span><br><small>${escapeHtml(provider.proxy_url)}</small>` : '<span class="badge off">直连</span>'}</td>
       <td>${provider.models?.length || 0}</td>
       <td><span class="badge ${provider.enabled ? 'on' : 'off'}">${provider.enabled ? '启用' : '停用'}</span></td>
       <td><button class="ghost" data-edit="${escapeAttr(provider.name)}">编辑</button></td>
@@ -103,7 +104,10 @@ function openProviderDialog(provider = null) {
   $('providerName').value = provider?.name || '';
   $('providerName').disabled = Boolean(provider);
   $('providerBaseUrl').value = provider?.base_url || '';
-  $('providerApiKey').value = provider?.api_key || '';
+  $('providerApiKey').value = '';
+  $('providerApiKey').required = !provider;
+  $('providerApiKey').placeholder = provider ? '留空表示保留原 API Key' : 'sk-...';
+  $('providerProxyUrl').value = provider?.proxy_url || '';
   $('providerModels').value = (provider?.models || []).join('\n');
   $('providerEnabled').checked = provider?.enabled ?? true;
   $('deleteProvider').hidden = !provider;
@@ -113,13 +117,15 @@ function openProviderDialog(provider = null) {
 async function saveProvider(event) {
   event.preventDefault();
   const editingName = $('editingName').value;
+  const apiKey = $('providerApiKey').value.trim();
   const payload = {
     name: $('providerName').value.trim(),
     base_url: $('providerBaseUrl').value.trim(),
-    api_key: $('providerApiKey').value.trim(),
+    proxy_url: $('providerProxyUrl').value.trim(),
     models: lines($('providerModels').value),
     enabled: $('providerEnabled').checked
   };
+  if (apiKey) payload.api_key = apiKey;
   try {
     if (editingName) {
       await api(`/admin/providers/${encodeURIComponent(editingName)}`, { method: 'PUT', body: JSON.stringify(payload) });

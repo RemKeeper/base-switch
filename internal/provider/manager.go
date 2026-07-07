@@ -33,8 +33,8 @@ func (m *Manager) GetProviderCount() (int, error) {
 	return m.store.GetProviderCount()
 }
 
-// ModelFetcher 模型获取器函数类型：根据 baseURL 和 apiKey 获取模型列表
-type ModelFetcher func(baseURL, apiKey string) ([]string, error)
+// ModelFetcher 模型获取器函数类型：根据 baseURL、apiKey 和代理地址获取模型列表
+type ModelFetcher func(baseURL, apiKey, proxyURL string) ([]string, error)
 
 // AutoDiscoverModels 自动发现 models 为空的 Provider，调用 /v1/models 获取并持久化
 // 返回成功发现的 Provider 数量
@@ -46,7 +46,7 @@ func (m *Manager) AutoDiscoverModels(fetcher ModelFetcher) (int, error) {
 
 	discovered := 0
 	for _, p := range providers {
-		models, err := fetcher(p.BaseURL, p.APIKey)
+		models, err := fetcher(p.BaseURL, p.APIKey, p.ProxyURL)
 		if err != nil {
 			continue // 跳过失败的 provider，继续下一个
 		}
@@ -74,7 +74,7 @@ func (m *Manager) RefreshProviderModels(fetcher ModelFetcher) (int, int, []strin
 	errors := []string{}
 
 	for _, p := range providers {
-		models, err := fetcher(p.BaseURL, p.APIKey)
+		models, err := fetcher(p.BaseURL, p.APIKey, p.ProxyURL)
 		if err != nil {
 			failed++
 			errors = append(errors, fmt.Sprintf("%s: %v", p.Name, err))
@@ -114,9 +114,9 @@ func (m *Manager) GetProviderByName(name string) (*storage.Provider, error) {
 }
 
 // AddProvider 新增 Provider；models 为空时自动调用 Provider 的 /v1/models 发现模型
-func (m *Manager) AddProvider(name, baseURL, apiKey string, models []string, enabled bool, fetcher ModelFetcher) error {
+func (m *Manager) AddProvider(name, baseURL, apiKey, proxyURL string, models []string, enabled bool, fetcher ModelFetcher) error {
 	if len(models) == 0 && fetcher != nil {
-		discoveredModels, err := fetcher(baseURL, apiKey)
+		discoveredModels, err := fetcher(baseURL, apiKey, proxyURL)
 		if err != nil {
 			return fmt.Errorf("自动发现 provider %s 模型失败: %w", name, err)
 		}
@@ -126,12 +126,12 @@ func (m *Manager) AddProvider(name, baseURL, apiKey string, models []string, ena
 		models = discoveredModels
 	}
 
-	return m.store.InsertProvider(name, baseURL, apiKey, models, enabled)
+	return m.store.InsertProvider(name, baseURL, apiKey, proxyURL, models, enabled)
 }
 
 // UpdateProvider 更新 Provider
-func (m *Manager) UpdateProvider(name, baseURL, apiKey string, models []string, enabled bool) error {
-	return m.store.UpdateProvider(name, baseURL, apiKey, models, enabled)
+func (m *Manager) UpdateProvider(name, baseURL, apiKey, proxyURL string, models []string, enabled bool) error {
+	return m.store.UpdateProvider(name, baseURL, apiKey, proxyURL, models, enabled)
 }
 
 // DeleteProvider 删除 Provider

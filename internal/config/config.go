@@ -8,11 +8,12 @@ import (
 
 // ProviderConfig 单个 AI Provider 配置
 type ProviderConfig struct {
-	Name    string   `json:"name"`
-	BaseURL string   `json:"base_url"`
-	APIKey  string   `json:"api_key"`
-	Models  []string `json:"models"`
-	Enabled bool     `json:"enabled"`
+	Name     string   `json:"name"`
+	BaseURL  string   `json:"base_url"`
+	APIKey   string   `json:"api_key"`
+	ProxyURL string   `json:"proxy_url"`
+	Models   []string `json:"models"`
+	Enabled  bool     `json:"enabled"`
 }
 
 // ListenConfig 监听配置

@@ -240,10 +240,10 @@ func (h *Handler) HandleChatCompletions(c *gin.Context) {
 	}
 	targetURL := strings.TrimRight(prov.BaseURL, "/") + "/v1/chat/completions"
 	if chatReq.Stream {
-		h.forwardStream(c.Writer, prov.Name, actualModel, c.Request.URL.Path, prov.APIKey, targetURL, newBody)
+		h.forwardStream(c.Writer, prov.Name, actualModel, c.Request.URL.Path, prov.APIKey, prov.ProxyURL, targetURL, newBody)
 		return
 	}
-	h.forwardNonStream(c.Writer, prov.Name, actualModel, c.Request.URL.Path, prov.APIKey, targetURL, newBody)
+	h.forwardNonStream(c.Writer, prov.Name, actualModel, c.Request.URL.Path, prov.APIKey, prov.ProxyURL, targetURL, newBody)
 }
 
 func (h *Handler) handleGenericProxy(c *gin.Context) {
@@ -272,7 +272,7 @@ func (h *Handler) handleGenericProxy(c *gin.Context) {
 	newBody := h.rewriteModelField(bodyBytes, actualModel)
 	targetURL := strings.TrimRight(prov.BaseURL, "/") + c.Request.URL.Path
 	log.Printf("[PROXY] %s %s -> %s/%s", c.Request.Method, c.Request.URL.Path, prov.Name, actualModel)
-	reqBuilder := h.client.R().SetHeader("Authorization", "Bearer "+prov.APIKey)
+	reqBuilder := h.providerClient(prov.ProxyURL).R().SetHeader("Authorization", "Bearer "+prov.APIKey)
 	if len(newBody) > 0 {
 		reqBuilder.SetBodyJsonBytes(newBody)
 	}
@@ -295,8 +295,8 @@ func (h *Handler) handleGenericProxy(c *gin.Context) {
 	h.recordTokenUsage(prov.Name, actualModel, c.Request.URL.Path, tokenusage.ExtractUsageFromJSON(body))
 }
 
-func (h *Handler) forwardNonStream(w http.ResponseWriter, providerName, modelName, endpoint, apiKey, targetURL string, body []byte) {
-	resp, err := h.client.R().SetHeader("Authorization", "Bearer "+apiKey).SetBodyJsonBytes(body).Post(targetURL)
+func (h *Handler) forwardNonStream(w http.ResponseWriter, providerName, modelName, endpoint, apiKey, proxyURL, targetURL string, body []byte) {
+	resp, err := h.providerClient(proxyURL).R().SetHeader("Authorization", "Bearer "+apiKey).SetBodyJsonBytes(body).Post(targetURL)
 	if err != nil {
 		log.Printf("[ERROR] 转发请求失败: %v", err)
 		http.Error(w, fmt.Sprintf(`{"error":{"message":"上游请求失败: %s"}}`, err.Error()), http.StatusBadGateway)
@@ -310,8 +310,8 @@ func (h *Handler) forwardNonStream(w http.ResponseWriter, providerName, modelNam
 	h.recordTokenUsage(providerName, modelName, endpoint, tokenusage.ExtractUsageFromJSON(respBody))
 }
 
-func (h *Handler) forwardStream(w http.ResponseWriter, providerName, modelName, endpoint, apiKey, targetURL string, body []byte) {
-	resp, err := h.client.R().SetHeader("Authorization", "Bearer "+apiKey).SetBodyJsonBytes(body).DisableAutoReadResponse().Post(targetURL)
+func (h *Handler) forwardStream(w http.ResponseWriter, providerName, modelName, endpoint, apiKey, proxyURL, targetURL string, body []byte) {
+	resp, err := h.providerClient(proxyURL).R().SetHeader("Authorization", "Bearer "+apiKey).SetBodyJsonBytes(body).DisableAutoReadResponse().Post(targetURL)
 	if err != nil {
 		log.Printf("[ERROR] 转发流式请求失败: %v", err)
 		http.Error(w, fmt.Sprintf(`{"error":{"message":"上游请求失败: %s"}}`, err.Error()), http.StatusBadGateway)
@@ -570,11 +570,12 @@ func (h *Handler) handleOpenAPIDoc(c *gin.Context) {
 }
 
 type AdminProviderRequest struct {
-	Name    string   `json:"name"`
-	BaseURL string   `json:"base_url"`
-	APIKey  string   `json:"api_key"`
-	Models  []string `json:"models"`
-	Enabled bool     `json:"enabled"`
+	Name     string   `json:"name"`
+	BaseURL  string   `json:"base_url"`
+	APIKey   string   `json:"api_key"`
+	ProxyURL string   `json:"proxy_url"`
+	Models   []string `json:"models"`
+	Enabled  bool     `json:"enabled"`
 }
 
 type AdminModelCheckRequest struct {
@@ -605,6 +606,7 @@ func (h *Handler) handleAdminListProviders(c *gin.Context) {
 		Name      string    `json:"name"`
 		BaseURL   string    `json:"base_url"`
 		APIKey    string    `json:"api_key"`
+		ProxyURL  string    `json:"proxy_url"`
 		Models    []string  `json:"models"`
 		Enabled   bool      `json:"enabled"`
 		CreatedAt time.Time `json:"created_at"`
@@ -612,7 +614,7 @@ func (h *Handler) handleAdminListProviders(c *gin.Context) {
 	}
 	result := make([]safeProvider, 0, len(providers))
 	for _, p := range providers {
-		result = append(result, safeProvider{ID: p.ID, Name: p.Name, BaseURL: p.BaseURL, APIKey: maskAPIKey(p.APIKey), Models: splitModels(p.Models), Enabled: p.Enabled, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt})
+		result = append(result, safeProvider{ID: p.ID, Name: p.Name, BaseURL: p.BaseURL, APIKey: maskAPIKey(p.APIKey), ProxyURL: p.ProxyURL, Models: splitModels(p.Models), Enabled: p.Enabled, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt})
 	}
 	c.JSON(http.StatusOK, gin.H{"object": "list", "data": result})
 }
@@ -628,7 +630,7 @@ func (h *Handler) handleAdminGetProvider(c *gin.Context) {
 		c.JSON(http.StatusNotFound, errorResponse("Provider '"+name+"' 不存在"))
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"id": p.ID, "name": p.Name, "base_url": p.BaseURL, "api_key": maskAPIKey(p.APIKey), "models": splitModels(p.Models), "enabled": p.Enabled, "created_at": p.CreatedAt, "updated_at": p.UpdatedAt})
+	c.JSON(http.StatusOK, gin.H{"id": p.ID, "name": p.Name, "base_url": p.BaseURL, "api_key": maskAPIKey(p.APIKey), "proxy_url": p.ProxyURL, "models": splitModels(p.Models), "enabled": p.Enabled, "created_at": p.CreatedAt, "updated_at": p.UpdatedAt})
 }
 
 func (h *Handler) handleAdminAddProvider(c *gin.Context) {
@@ -650,7 +652,7 @@ func (h *Handler) handleAdminAddProvider(c *gin.Context) {
 		c.JSON(http.StatusConflict, errorResponse("Provider '"+req.Name+"' 已存在"))
 		return
 	}
-	if err := h.manager.AddProvider(req.Name, req.BaseURL, req.APIKey, req.Models, req.Enabled, h.FetchProviderModels); err != nil {
+	if err := h.manager.AddProvider(req.Name, req.BaseURL, req.APIKey, req.ProxyURL, req.Models, req.Enabled, h.FetchProviderModels); err != nil {
 		c.JSON(http.StatusInternalServerError, errorResponse("新增 Provider 失败: "+err.Error()))
 		return
 	}
@@ -669,7 +671,19 @@ func (h *Handler) handleAdminUpdateProvider(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, errorResponse(err.Error()))
 		return
 	}
-	if err := h.manager.UpdateProvider(name, req.BaseURL, req.APIKey, req.Models, req.Enabled); err != nil {
+	existing, err := h.manager.GetProviderByName(name)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("获取 Provider 失败: "+err.Error()))
+		return
+	}
+	if existing == nil {
+		c.JSON(http.StatusNotFound, errorResponse("Provider '"+name+"' 不存在"))
+		return
+	}
+	if shouldKeepExistingAPIKey(req.APIKey) {
+		req.APIKey = existing.APIKey
+	}
+	if err := h.manager.UpdateProvider(name, req.BaseURL, req.APIKey, req.ProxyURL, req.Models, req.Enabled); err != nil {
 		c.JSON(http.StatusInternalServerError, errorResponse("更新 Provider 失败: "+err.Error()))
 		return
 	}
@@ -824,7 +838,7 @@ func (h *Handler) checkSingleModel(parent context.Context, p storage.Provider, m
 	}
 
 	start := time.Now()
-	resp, err := h.client.R().
+	resp, err := h.providerClient(p.ProxyURL).R().
 		SetContext(ctx).
 		SetHeader("Authorization", "Bearer "+p.APIKey).
 		SetBody(body).
@@ -853,6 +867,14 @@ func truncateForResponse(value string, maxLen int) string {
 	return value[:maxLen] + "..."
 }
 
+func (h *Handler) providerClient(proxyURL string) *req.Client {
+	proxyURL = strings.TrimSpace(proxyURL)
+	if proxyURL == "" {
+		return h.client
+	}
+	return h.client.Clone().SetProxyURL(proxyURL)
+}
+
 func validateProviderRequest(req AdminProviderRequest, requireName bool) error {
 	if requireName && strings.TrimSpace(req.Name) == "" {
 		return fmt.Errorf("name 字段不能为空")
@@ -860,7 +882,7 @@ func validateProviderRequest(req AdminProviderRequest, requireName bool) error {
 	if strings.TrimSpace(req.BaseURL) == "" {
 		return fmt.Errorf("base_url 字段不能为空")
 	}
-	if strings.TrimSpace(req.APIKey) == "" {
+	if requireName && strings.TrimSpace(req.APIKey) == "" {
 		return fmt.Errorf("api_key 字段不能为空")
 	}
 	return nil
@@ -885,6 +907,11 @@ func maskAPIKey(key string) string {
 		return "****"
 	}
 	return key[:4] + "****" + key[len(key)-4:]
+}
+
+func shouldKeepExistingAPIKey(key string) bool {
+	key = strings.TrimSpace(key)
+	return key == "" || strings.Contains(key, "****")
 }
 
 func jsonContent(schema gin.H) gin.H {
@@ -985,11 +1012,12 @@ func openAPISchemas() gin.H {
 			"type":     "object",
 			"required": []string{"base_url", "api_key"},
 			"properties": gin.H{
-				"name":     gin.H{"type": "string", "description": "创建 Provider 时必填，更新时由路径指定", "example": "openai"},
-				"base_url": gin.H{"type": "string", "example": "https://api.example.com"},
-				"api_key":  gin.H{"type": "string", "example": "sk-xxxxxxxx"},
-				"models":   gin.H{"type": "array", "items": gin.H{"type": "string"}, "example": []string{"gpt-4o", "gpt-4o-mini"}},
-				"enabled":  gin.H{"type": "boolean", "example": true},
+				"name":      gin.H{"type": "string", "description": "创建 Provider 时必填，更新时由路径指定", "example": "openai"},
+				"base_url":  gin.H{"type": "string", "example": "https://api.example.com"},
+				"api_key":   gin.H{"type": "string", "example": "sk-xxxxxxxx"},
+				"proxy_url": gin.H{"type": "string", "description": "可选，上游请求代理地址", "example": "http://127.0.0.1:7890"},
+				"models":    gin.H{"type": "array", "items": gin.H{"type": "string"}, "example": []string{"gpt-4o", "gpt-4o-mini"}},
+				"enabled":   gin.H{"type": "boolean", "example": true},
 			},
 		},
 		"SafeProvider": gin.H{
@@ -999,6 +1027,7 @@ func openAPISchemas() gin.H {
 				"name":       gin.H{"type": "string"},
 				"base_url":   gin.H{"type": "string"},
 				"api_key":    gin.H{"type": "string", "description": "脱敏后的 API Key"},
+				"proxy_url":  gin.H{"type": "string", "description": "上游请求代理地址，空值表示直连"},
 				"models":     gin.H{"type": "array", "items": gin.H{"type": "string"}},
 				"enabled":    gin.H{"type": "boolean"},
 				"created_at": gin.H{"type": "string", "format": "date-time"},
@@ -1119,9 +1148,9 @@ type modelsAPIResponse struct {
 	} `json:"data"`
 }
 
-func (h *Handler) FetchProviderModels(baseURL, apiKey string) ([]string, error) {
+func (h *Handler) FetchProviderModels(baseURL, apiKey, proxyURL string) ([]string, error) {
 	targetURL := strings.TrimRight(baseURL, "/") + "/v1/models"
-	resp, err := h.client.R().SetHeader("Authorization", "Bearer "+apiKey).Get(targetURL)
+	resp, err := h.providerClient(proxyURL).R().SetHeader("Authorization", "Bearer "+apiKey).Get(targetURL)
 	if err != nil {
 		return nil, fmt.Errorf("请求 %s 失败: %w", targetURL, err)
 	}

@@ -30,9 +30,10 @@
       "name": "example-provider",
       "base_url": "https://api.example.com",
       "api_key": "sk-your-provider-api-key",
+      "proxy_url": "",
       "models": ["gpt-4o", "gpt-4o-mini"],
       "enabled": true,
-      "_comment": "models 为空时将自动调用 /v1/models 发现模型"
+      "_comment": "proxy_url 可选，如 http://127.0.0.1:7890；models 为空时将自动调用 /v1/models 发现模型"
     }
   ]
 }

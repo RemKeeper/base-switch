@@ -20,6 +20,7 @@ type Provider struct {
 	Name      string    `json:"name" gorm:"uniqueIndex;not null"`
 	BaseURL   string    `json:"base_url" gorm:"not null"`
 	APIKey    string    `json:"api_key" gorm:"not null;default:''"`
+	ProxyURL  string    `json:"proxy_url" gorm:"not null;default:''"`
 	Models    string    `json:"models" gorm:"not null;default:''"` // 逗号分隔
 	Enabled   bool      `json:"enabled" gorm:"not null;default:true;index"`
 	CreatedAt time.Time `json:"created_at"`
@@ -95,17 +96,19 @@ func (s *Store) Close() error {
 func (s *Store) SeedFromConfig(providers []config.ProviderConfig) error {
 	for _, p := range providers {
 		provider := Provider{
-			Name:    p.Name,
-			BaseURL: p.BaseURL,
-			APIKey:  p.APIKey,
-			Models:  strings.Join(p.Models, ","),
-			Enabled: p.Enabled,
+			Name:     p.Name,
+			BaseURL:  p.BaseURL,
+			APIKey:   p.APIKey,
+			ProxyURL: p.ProxyURL,
+			Models:   strings.Join(p.Models, ","),
+			Enabled:  p.Enabled,
 		}
 		err := s.db.Where("name = ?", p.Name).Assign(map[string]any{
-			"base_url": p.BaseURL,
-			"api_key":  p.APIKey,
-			"models":   strings.Join(p.Models, ","),
-			"enabled":  p.Enabled,
+			"base_url":  p.BaseURL,
+			"api_key":   p.APIKey,
+			"proxy_url": p.ProxyURL,
+			"models":    strings.Join(p.Models, ","),
+			"enabled":   p.Enabled,
 		}).FirstOrCreate(&provider).Error
 		if err != nil {
 			return fmt.Errorf("插入 provider %s 失败: %w", p.Name, err)
@@ -269,8 +272,8 @@ func (s *Store) GetProviderByName(name string) (*Provider, error) {
 }
 
 // InsertProvider 新增 Provider
-func (s *Store) InsertProvider(name, baseURL, apiKey string, models []string, enabled bool) error {
-	p := Provider{Name: name, BaseURL: baseURL, APIKey: apiKey, Models: strings.Join(models, ","), Enabled: enabled}
+func (s *Store) InsertProvider(name, baseURL, apiKey, proxyURL string, models []string, enabled bool) error {
+	p := Provider{Name: name, BaseURL: baseURL, APIKey: apiKey, ProxyURL: proxyURL, Models: strings.Join(models, ","), Enabled: enabled}
 	if err := s.db.Create(&p).Error; err != nil {
 		return fmt.Errorf("新增 provider %s 失败: %w", name, err)
 	}
@@ -279,12 +282,13 @@ func (s *Store) InsertProvider(name, baseURL, apiKey string, models []string, en
 }
 
 // UpdateProvider 更新 Provider（按 name 查找）
-func (s *Store) UpdateProvider(name, baseURL, apiKey string, models []string, enabled bool) error {
+func (s *Store) UpdateProvider(name, baseURL, apiKey, proxyURL string, models []string, enabled bool) error {
 	result := s.db.Model(&Provider{}).Where("name = ?", name).Updates(map[string]any{
-		"base_url": baseURL,
-		"api_key":  apiKey,
-		"models":   strings.Join(models, ","),
-		"enabled":  enabled,
+		"base_url":  baseURL,
+		"api_key":   apiKey,
+		"proxy_url": proxyURL,
+		"models":    strings.Join(models, ","),
+		"enabled":   enabled,
 	})
 	if result.Error != nil {
 		return fmt.Errorf("更新 provider %s 失败: %w", name, result.Error)
