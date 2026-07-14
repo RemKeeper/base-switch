@@ -19,6 +19,39 @@ type Usage struct {
 	TotalTokens      int `json:"total_tokens"`
 }
 
+// UnmarshalJSON 同时兼容 Chat Completions 与 Responses API 的 token 字段名。
+func (u *Usage) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		PromptTokens     *int `json:"prompt_tokens"`
+		CompletionTokens *int `json:"completion_tokens"`
+		InputTokens      *int `json:"input_tokens"`
+		OutputTokens     *int `json:"output_tokens"`
+		TotalTokens      *int `json:"total_tokens"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	u.PromptTokens = firstTokenValue(raw.PromptTokens, raw.InputTokens)
+	u.CompletionTokens = firstTokenValue(raw.CompletionTokens, raw.OutputTokens)
+	if raw.TotalTokens != nil {
+		u.TotalTokens = *raw.TotalTokens
+	} else {
+		u.TotalTokens = u.PromptTokens + u.CompletionTokens
+	}
+	return nil
+}
+
+func firstTokenValue(primary, fallback *int) int {
+	if primary != nil {
+		return *primary
+	}
+	if fallback != nil {
+		return *fallback
+	}
+	return 0
+}
+
 // Record 表示一条 token 消耗记录。
 type Record struct {
 	ID               int64     `json:"id"`
@@ -182,31 +215,71 @@ func applyFilters(db *gorm.DB, q Query) *gorm.DB {
 // ExtractUsageFromJSON 从非流式 OpenAI 兼容 JSON 响应中提取 usage。
 func ExtractUsageFromJSON(body []byte) *Usage {
 	var raw struct {
-		Usage *Usage `json:"usage"`
+		Usage    *Usage `json:"usage"`
+		Response *struct {
+			Usage *Usage `json:"usage"`
+		} `json:"response"`
+		Result *struct {
+			Usage *Usage `json:"usage"`
+		} `json:"result"`
+		Data *struct {
+			Usage *Usage `json:"usage"`
+		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil
 	}
-	return normalizeUsage(raw.Usage)
+	if raw.Usage != nil {
+		return normalizeUsage(raw.Usage)
+	}
+	if raw.Response != nil && raw.Response.Usage != nil {
+		return normalizeUsage(raw.Response.Usage)
+	}
+	if raw.Result != nil && raw.Result.Usage != nil {
+		return normalizeUsage(raw.Result.Usage)
+	}
+	if raw.Data != nil && raw.Data.Usage != nil {
+		return normalizeUsage(raw.Data.Usage)
+	}
+	return nil
 }
 
 // ExtractUsageFromSSE 从 SSE 文本中提取 usage，支持 OpenAI stream_options.include_usage 返回的 chunk。
 func ExtractUsageFromSSE(body []byte) *Usage {
 	var found *Usage
+	var eventData []byte
+	flushEvent := func() {
+		if len(eventData) == 0 {
+			return
+		}
+		payload := bytes.TrimSpace(eventData)
+		if !bytes.Equal(payload, []byte("[DONE]")) {
+			if usage := ExtractUsageFromJSON(payload); usage != nil {
+				found = usage
+			}
+		}
+		eventData = eventData[:0]
+	}
+
 	for _, line := range bytes.Split(body, []byte("\n")) {
-		line = bytes.TrimSpace(line)
+		line = bytes.TrimSuffix(line, []byte("\r"))
+		if len(line) == 0 {
+			flushEvent()
+			continue
+		}
 		if !bytes.HasPrefix(line, []byte("data:")) {
 			continue
 		}
-		payload := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
-		if bytes.Equal(payload, []byte("[DONE]")) || len(payload) == 0 {
-			continue
+		payload := bytes.TrimPrefix(line, []byte("data:"))
+		if len(payload) > 0 && payload[0] == ' ' {
+			payload = payload[1:]
 		}
-		usage := ExtractUsageFromJSON(payload)
-		if usage != nil {
-			found = usage
+		if len(eventData) > 0 {
+			eventData = append(eventData, '\n')
 		}
+		eventData = append(eventData, payload...)
 	}
+	flushEvent()
 	return found
 }
 

@@ -292,7 +292,11 @@ func (h *Handler) handleGenericProxy(c *gin.Context) {
 	c.Writer.WriteHeader(resp.StatusCode)
 	body := resp.Bytes()
 	c.Writer.Write(body)
-	h.recordTokenUsage(prov.Name, actualModel, c.Request.URL.Path, tokenusage.ExtractUsageFromJSON(body))
+	usage := tokenusage.ExtractUsageFromJSON(body)
+	if strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
+		usage = tokenusage.ExtractUsageFromSSE(body)
+	}
+	h.recordTokenUsage(prov.Name, actualModel, c.Request.URL.Path, usage)
 }
 
 func (h *Handler) forwardNonStream(w http.ResponseWriter, providerName, modelName, endpoint, apiKey, proxyURL, targetURL string, body []byte) {
@@ -330,6 +334,9 @@ func (h *Handler) forwardStream(w http.ResponseWriter, providerName, modelName, 
 	}
 	buf := make([]byte, 4096)
 	var capture []byte
+	defer func() {
+		h.recordTokenUsage(providerName, modelName, endpoint, tokenusage.ExtractUsageFromSSE(capture))
+	}()
 	for {
 		n, readErr := resp.Response.Body.Read(buf)
 		if n > 0 {
@@ -343,7 +350,6 @@ func (h *Handler) forwardStream(w http.ResponseWriter, providerName, modelName, 
 			if readErr != io.EOF {
 				log.Printf("[ERROR] 读取流式响应失败: %v", readErr)
 			}
-			h.recordTokenUsage(providerName, modelName, endpoint, tokenusage.ExtractUsageFromSSE(capture))
 			return
 		}
 	}
