@@ -124,6 +124,7 @@ go build -o baseSwitch .
 | `GET` | `/admin/providers/:name` | 获取指定 Provider |
 | `PUT` | `/admin/providers/:name` | 更新指定 Provider |
 | `DELETE` | `/admin/providers/:name` | 删除指定 Provider |
+| `POST` | `/admin/providers/:name/refresh-models` | 手动刷新指定 Provider 模型列表 |
 | `POST` | `/admin/models/check` | 流式检测模型存活状态，返回 NDJSON |
 | `GET` | `/admin/usage/summary` | 查询 token 消耗聚合统计 |
 | `GET` | `/admin/usage/records` | 查询 token 消耗明细记录 |
@@ -138,6 +139,8 @@ go build -o baseSwitch .
 4. 部署后打开页面，填写 baseSwitch 后端地址和管理 API Key。
 
 页面支持 Provider 增删改查、Token 用量统计和模型存活检测。管理 API Key 保存在当前浏览器的 `localStorage`。
+
+Provider 列表中的“刷新模型”按钮会通过指定 Provider 的 `/v1/models` 接口重新获取模型列表，并保存到数据库；请求会沿用该 Provider 配置的代理地址。
 
 ### 模型存活检测
 

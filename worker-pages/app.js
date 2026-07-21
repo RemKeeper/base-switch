@@ -76,13 +76,37 @@ function renderProviders() {
       <td>${provider.proxy_url ? `<span class="badge on">已配置</span><br><small>${escapeHtml(provider.proxy_url)}</small>` : '<span class="badge off">直连</span>'}</td>
       <td>${provider.models?.length || 0}</td>
       <td><span class="badge ${provider.enabled ? 'on' : 'off'}">${provider.enabled ? '启用' : '停用'}</span></td>
-      <td><button class="ghost" data-edit="${escapeAttr(provider.name)}">编辑</button></td>
+      <td>
+        <button class="ghost" data-refresh-models="${escapeAttr(provider.name)}" ${provider.enabled ? '' : 'disabled'}>刷新模型</button>
+        <button class="ghost" data-edit="${escapeAttr(provider.name)}">编辑</button>
+      </td>
     </tr>
   `).join('');
-  $('providersTable').innerHTML = rows || '<tr><td colspan="5">暂无 Provider</td></tr>';
+  $('providersTable').innerHTML = rows || '<tr><td colspan="6">暂无 Provider</td></tr>';
   document.querySelectorAll('[data-edit]').forEach((button) => {
     button.addEventListener('click', () => openProviderDialog(state.providers.find((item) => item.name === button.dataset.edit)));
   });
+  document.querySelectorAll('[data-refresh-models]').forEach((button) => {
+    button.addEventListener('click', () => refreshProviderModels(button.dataset.refreshModels, button));
+  });
+}
+
+async function refreshProviderModels(name, button) {
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = '刷新中...';
+  try {
+    const data = await api(`/admin/providers/${encodeURIComponent(name)}/refresh-models`, { method: 'POST' });
+    await loadProviders();
+    toast(`${name} 已刷新，共 ${data.count || 0} 个模型`);
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
+  }
 }
 
 function renderProviderOptions() {

@@ -72,6 +72,7 @@ func (h *Handler) buildRouter() *gin.Engine {
 		providers.GET("/:name", h.handleAdminGetProvider)
 		providers.PUT("/:name", h.handleAdminUpdateProvider)
 		providers.DELETE("/:name", h.handleAdminDeleteProvider)
+		providers.POST("/:name/refresh-models", h.handleAdminRefreshProviderModels)
 
 		usage := admin.Group("/usage")
 		usage.GET("/summary", h.handleAdminUsageSummary)
@@ -518,6 +519,16 @@ func (h *Handler) handleOpenAPIDoc(c *gin.Context) {
 					"responses":   adminResponses(schemaRef("#/components/schemas/MessageResponse")),
 				},
 			},
+			"/admin/providers/{name}/refresh-models": gin.H{
+				"parameters": []gin.H{pathParam("name", "Provider 名称")},
+				"post": gin.H{
+					"tags":        []string{"Admin"},
+					"summary":     "手动刷新指定 Provider 模型列表",
+					"operationId": "refreshProviderModels",
+					"security":    []gin.H{{"ManagementBearerAuth": []string{}}},
+					"responses":   adminResponses(schemaRef("#/components/schemas/RefreshProviderModelsResponse")),
+				},
+			},
 			"/admin/usage/summary": gin.H{
 				"get": gin.H{
 					"tags":        []string{"Admin"},
@@ -705,6 +716,45 @@ func (h *Handler) handleAdminDeleteProvider(c *gin.Context) {
 	}
 	log.Printf("[ADMIN] 删除 Provider: %s", name)
 	c.JSON(http.StatusOK, gin.H{"message": "Provider '" + name + "' 删除成功"})
+}
+
+func (h *Handler) handleAdminRefreshProviderModels(c *gin.Context) {
+	name := c.Param("name")
+	p, err := h.manager.GetProviderByName(name)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("获取 Provider 失败: "+err.Error()))
+		return
+	}
+	if p == nil {
+		c.JSON(http.StatusNotFound, errorResponse("Provider '"+name+"' 不存在"))
+		return
+	}
+	if !p.Enabled {
+		c.JSON(http.StatusBadRequest, errorResponse("Provider '"+name+"' 已禁用，无法刷新模型"))
+		return
+	}
+
+	models, err := h.FetchProviderModels(p.BaseURL, p.APIKey, p.ProxyURL)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, errorResponse("刷新 Provider 模型失败: "+err.Error()))
+		return
+	}
+	if len(models) == 0 {
+		c.JSON(http.StatusBadGateway, errorResponse("刷新 Provider 模型失败: 上游未返回任何模型"))
+		return
+	}
+	if err := h.manager.GetStore().UpdateProviderModels(name, models); err != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("保存 Provider 模型失败: "+err.Error()))
+		return
+	}
+
+	log.Printf("[ADMIN] 刷新 Provider 模型: %s (%d 个)", name, len(models))
+	c.JSON(http.StatusOK, gin.H{
+		"message":  "Provider '" + name + "' 模型刷新成功",
+		"provider": name,
+		"models":   models,
+		"count":    len(models),
+	})
 }
 
 func (h *Handler) handleAdminUsageSummary(c *gin.Context) {
@@ -1050,6 +1100,15 @@ func openAPISchemas() gin.H {
 		"MessageResponse": gin.H{
 			"type":       "object",
 			"properties": gin.H{"message": gin.H{"type": "string"}},
+		},
+		"RefreshProviderModelsResponse": gin.H{
+			"type": "object",
+			"properties": gin.H{
+				"message":  gin.H{"type": "string"},
+				"provider": gin.H{"type": "string"},
+				"models":   gin.H{"type": "array", "items": gin.H{"type": "string"}},
+				"count":    gin.H{"type": "integer"},
+			},
 		},
 		"AdminModelCheckRequest": gin.H{
 			"type": "object",
