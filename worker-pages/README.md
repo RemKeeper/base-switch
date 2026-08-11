@@ -18,5 +18,5 @@
 
 - baseSwitch 后端已开启 CORS，页面可跨域访问管理 API。
 - 管理 API Key 会保存在当前浏览器的 `localStorage`。
-- 模型探活会对上游 `/v1/chat/completions` 发送最小非流式请求，可能产生少量 token 消耗。
+- 模型探活会按 Provider 的 `api_type` 对 OpenAI `/v1/chat/completions` 或 Anthropic `/v1/messages` 发送最小非流式请求，可能产生少量 token 消耗。
 - 探活接口会逐个检测模型并逐行返回结果，不会并发请求上游。

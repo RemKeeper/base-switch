@@ -588,6 +588,7 @@ func (h *Handler) handleOpenAPIDoc(c *gin.Context) {
 
 type AdminProviderRequest struct {
 	Name     string   `json:"name"`
+	APIType  string   `json:"api_type"`
 	BaseURL  string   `json:"base_url"`
 	APIKey   string   `json:"api_key"`
 	ProxyURL string   `json:"proxy_url"`
@@ -621,6 +622,7 @@ func (h *Handler) handleAdminListProviders(c *gin.Context) {
 	type safeProvider struct {
 		ID        int64     `json:"id"`
 		Name      string    `json:"name"`
+		APIType   string    `json:"api_type"`
 		BaseURL   string    `json:"base_url"`
 		APIKey    string    `json:"api_key"`
 		ProxyURL  string    `json:"proxy_url"`
@@ -631,7 +633,7 @@ func (h *Handler) handleAdminListProviders(c *gin.Context) {
 	}
 	result := make([]safeProvider, 0, len(providers))
 	for _, p := range providers {
-		result = append(result, safeProvider{ID: p.ID, Name: p.Name, BaseURL: p.BaseURL, APIKey: maskAPIKey(p.APIKey), ProxyURL: p.ProxyURL, Models: splitModels(p.Models), Enabled: p.Enabled, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt})
+		result = append(result, safeProvider{ID: p.ID, Name: p.Name, APIType: normalizeAPIType(p.APIType), BaseURL: p.BaseURL, APIKey: maskAPIKey(p.APIKey), ProxyURL: p.ProxyURL, Models: splitModels(p.Models), Enabled: p.Enabled, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt})
 	}
 	c.JSON(http.StatusOK, gin.H{"object": "list", "data": result})
 }
@@ -647,7 +649,7 @@ func (h *Handler) handleAdminGetProvider(c *gin.Context) {
 		c.JSON(http.StatusNotFound, errorResponse("Provider '"+name+"' 不存在"))
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"id": p.ID, "name": p.Name, "base_url": p.BaseURL, "api_key": maskAPIKey(p.APIKey), "proxy_url": p.ProxyURL, "models": splitModels(p.Models), "enabled": p.Enabled, "created_at": p.CreatedAt, "updated_at": p.UpdatedAt})
+	c.JSON(http.StatusOK, gin.H{"id": p.ID, "name": p.Name, "api_type": normalizeAPIType(p.APIType), "base_url": p.BaseURL, "api_key": maskAPIKey(p.APIKey), "proxy_url": p.ProxyURL, "models": splitModels(p.Models), "enabled": p.Enabled, "created_at": p.CreatedAt, "updated_at": p.UpdatedAt})
 }
 
 func (h *Handler) handleAdminAddProvider(c *gin.Context) {
@@ -669,7 +671,8 @@ func (h *Handler) handleAdminAddProvider(c *gin.Context) {
 		c.JSON(http.StatusConflict, errorResponse("Provider '"+req.Name+"' 已存在"))
 		return
 	}
-	if err := h.manager.AddProvider(req.Name, req.BaseURL, req.APIKey, req.ProxyURL, req.Models, req.Enabled, h.FetchProviderModels); err != nil {
+	req.APIType = normalizeAPIType(req.APIType)
+	if err := h.manager.AddProvider(req.Name, req.APIType, req.BaseURL, req.APIKey, req.ProxyURL, req.Models, req.Enabled, h.FetchProviderModels); err != nil {
 		c.JSON(http.StatusInternalServerError, errorResponse("新增 Provider 失败: "+err.Error()))
 		return
 	}
@@ -700,7 +703,11 @@ func (h *Handler) handleAdminUpdateProvider(c *gin.Context) {
 	if shouldKeepExistingAPIKey(req.APIKey) {
 		req.APIKey = existing.APIKey
 	}
-	if err := h.manager.UpdateProvider(name, req.BaseURL, req.APIKey, req.ProxyURL, req.Models, req.Enabled); err != nil {
+	if strings.TrimSpace(req.APIType) == "" {
+		req.APIType = existing.APIType
+	}
+	req.APIType = normalizeAPIType(req.APIType)
+	if err := h.manager.UpdateProvider(name, req.APIType, req.BaseURL, req.APIKey, req.ProxyURL, req.Models, req.Enabled); err != nil {
 		c.JSON(http.StatusInternalServerError, errorResponse("更新 Provider 失败: "+err.Error()))
 		return
 	}
@@ -734,7 +741,7 @@ func (h *Handler) handleAdminRefreshProviderModels(c *gin.Context) {
 		return
 	}
 
-	models, err := h.FetchProviderModels(p.BaseURL, p.APIKey, p.ProxyURL)
+	models, err := h.FetchProviderModels(p.APIType, p.BaseURL, p.APIKey, p.ProxyURL)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, errorResponse("刷新 Provider 模型失败: "+err.Error()))
 		return
@@ -884,21 +891,34 @@ func (h *Handler) checkSingleModel(parent context.Context, p storage.Provider, m
 	ctx, cancel := context.WithTimeout(parent, time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
 
-	body := gin.H{
-		"model":      model,
-		"stream":     false,
-		"max_tokens": 1,
-		"messages": []gin.H{
-			{"role": "user", "content": prompt},
-		},
+	request := h.providerClient(p.ProxyURL).R().SetContext(ctx)
+	var targetURL string
+	if normalizeAPIType(p.APIType) == "anthropic" {
+		targetURL = strings.TrimRight(p.BaseURL, "/") + "/v1/messages"
+		request.SetHeader("x-api-key", p.APIKey).
+			SetHeader("anthropic-version", "2023-06-01").
+			SetBody(gin.H{
+				"model":      model,
+				"max_tokens": 1,
+				"messages": []gin.H{
+					{"role": "user", "content": prompt},
+				},
+			})
+	} else {
+		targetURL = strings.TrimRight(p.BaseURL, "/") + "/v1/chat/completions"
+		request.SetHeader("Authorization", "Bearer "+p.APIKey).
+			SetBody(gin.H{
+				"model":      model,
+				"stream":     false,
+				"max_tokens": 1,
+				"messages": []gin.H{
+					{"role": "user", "content": prompt},
+				},
+			})
 	}
 
 	start := time.Now()
-	resp, err := h.providerClient(p.ProxyURL).R().
-		SetContext(ctx).
-		SetHeader("Authorization", "Bearer "+p.APIKey).
-		SetBody(body).
-		Post(strings.TrimRight(p.BaseURL, "/") + "/v1/chat/completions")
+	resp, err := request.Post(targetURL)
 	result.LatencyMS = time.Since(start).Milliseconds()
 
 	if err != nil {
@@ -941,7 +961,19 @@ func validateProviderRequest(req AdminProviderRequest, requireName bool) error {
 	if requireName && strings.TrimSpace(req.APIKey) == "" {
 		return fmt.Errorf("api_key 字段不能为空")
 	}
+	apiType := normalizeAPIType(req.APIType)
+	if apiType != "openai" && apiType != "anthropic" {
+		return fmt.Errorf("api_type 仅支持 openai 或 anthropic")
+	}
 	return nil
+}
+
+func normalizeAPIType(apiType string) string {
+	apiType = strings.ToLower(strings.TrimSpace(apiType))
+	if apiType == "" {
+		return "openai"
+	}
+	return apiType
 }
 
 func splitModels(modelsStr string) []string {
@@ -1069,6 +1101,7 @@ func openAPISchemas() gin.H {
 			"required": []string{"base_url", "api_key"},
 			"properties": gin.H{
 				"name":      gin.H{"type": "string", "description": "创建 Provider 时必填，更新时由路径指定", "example": "openai"},
+				"api_type":  gin.H{"type": "string", "enum": []string{"openai", "anthropic"}, "default": "openai"},
 				"base_url":  gin.H{"type": "string", "example": "https://api.example.com"},
 				"api_key":   gin.H{"type": "string", "example": "sk-xxxxxxxx"},
 				"proxy_url": gin.H{"type": "string", "description": "可选，上游请求代理地址", "example": "http://127.0.0.1:7890"},
@@ -1081,6 +1114,7 @@ func openAPISchemas() gin.H {
 			"properties": gin.H{
 				"id":         gin.H{"type": "integer", "format": "int64"},
 				"name":       gin.H{"type": "string"},
+				"api_type":   gin.H{"type": "string", "enum": []string{"openai", "anthropic"}},
 				"base_url":   gin.H{"type": "string"},
 				"api_key":    gin.H{"type": "string", "description": "脱敏后的 API Key"},
 				"proxy_url":  gin.H{"type": "string", "description": "上游请求代理地址，空值表示直连"},
@@ -1213,9 +1247,15 @@ type modelsAPIResponse struct {
 	} `json:"data"`
 }
 
-func (h *Handler) FetchProviderModels(baseURL, apiKey, proxyURL string) ([]string, error) {
+func (h *Handler) FetchProviderModels(apiType, baseURL, apiKey, proxyURL string) ([]string, error) {
 	targetURL := strings.TrimRight(baseURL, "/") + "/v1/models"
-	resp, err := h.providerClient(proxyURL).R().SetHeader("Authorization", "Bearer "+apiKey).Get(targetURL)
+	request := h.providerClient(proxyURL).R()
+	if normalizeAPIType(apiType) == "anthropic" {
+		request.SetHeader("x-api-key", apiKey).SetHeader("anthropic-version", "2023-06-01")
+	} else {
+		request.SetHeader("Authorization", "Bearer "+apiKey)
+	}
+	resp, err := request.Get(targetURL)
 	if err != nil {
 		return nil, fmt.Errorf("请求 %s 失败: %w", targetURL, err)
 	}

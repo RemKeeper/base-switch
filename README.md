@@ -86,6 +86,7 @@ go build -o baseSwitch .
 ```json
 {
   "name": "my-provider",
+  "api_type": "openai",
   "base_url": "https://api.example.com",
   "api_key": "sk-xxxxxxxx",
   "proxy_url": "http://127.0.0.1:7890",
@@ -97,11 +98,14 @@ go build -o baseSwitch .
 | 字段 | 说明 |
 |---|---|
 | `name` | Provider 唯一标识，用于模型路由 |
+| `api_type` | 上游 API 协议，支持 `openai` 或 `anthropic`，默认 `openai` |
 | `base_url` | Provider API 基础地址 |
 | `api_key` | Provider API Key |
 | `proxy_url` | 可选，上游请求代理地址；为空则直连 |
 | `models` | 模型列表，为空时启动或通过管理 API 新增 Provider 时自动发现 |
 | `enabled` | 是否启用 |
+
+模型存活检测会根据 `api_type` 选择上游接口：OpenAI 使用 `/v1/chat/completions`，Anthropic 使用 `/v1/messages`，并自动设置对应鉴权请求头。
 
 ## 🔌 API 端点
 

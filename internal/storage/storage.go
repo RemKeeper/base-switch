@@ -18,6 +18,7 @@ import (
 type Provider struct {
 	ID        int64     `json:"id" gorm:"primaryKey;autoIncrement"`
 	Name      string    `json:"name" gorm:"uniqueIndex;not null"`
+	APIType   string    `json:"api_type" gorm:"not null;default:openai"`
 	BaseURL   string    `json:"base_url" gorm:"not null"`
 	APIKey    string    `json:"api_key" gorm:"not null;default:''"`
 	ProxyURL  string    `json:"proxy_url" gorm:"not null;default:''"`
@@ -97,6 +98,7 @@ func (s *Store) SeedFromConfig(providers []config.ProviderConfig) error {
 	for _, p := range providers {
 		provider := Provider{
 			Name:     p.Name,
+			APIType:  p.APIType,
 			BaseURL:  p.BaseURL,
 			APIKey:   p.APIKey,
 			ProxyURL: p.ProxyURL,
@@ -104,6 +106,7 @@ func (s *Store) SeedFromConfig(providers []config.ProviderConfig) error {
 			Enabled:  p.Enabled,
 		}
 		err := s.db.Where("name = ?", p.Name).Assign(map[string]any{
+			"api_type":  p.APIType,
 			"base_url":  p.BaseURL,
 			"api_key":   p.APIKey,
 			"proxy_url": p.ProxyURL,
@@ -272,8 +275,8 @@ func (s *Store) GetProviderByName(name string) (*Provider, error) {
 }
 
 // InsertProvider 新增 Provider
-func (s *Store) InsertProvider(name, baseURL, apiKey, proxyURL string, models []string, enabled bool) error {
-	p := Provider{Name: name, BaseURL: baseURL, APIKey: apiKey, ProxyURL: proxyURL, Models: strings.Join(models, ","), Enabled: enabled}
+func (s *Store) InsertProvider(name, apiType, baseURL, apiKey, proxyURL string, models []string, enabled bool) error {
+	p := Provider{Name: name, APIType: apiType, BaseURL: baseURL, APIKey: apiKey, ProxyURL: proxyURL, Models: strings.Join(models, ","), Enabled: enabled}
 	if err := s.db.Create(&p).Error; err != nil {
 		return fmt.Errorf("新增 provider %s 失败: %w", name, err)
 	}
@@ -282,8 +285,9 @@ func (s *Store) InsertProvider(name, baseURL, apiKey, proxyURL string, models []
 }
 
 // UpdateProvider 更新 Provider（按 name 查找）
-func (s *Store) UpdateProvider(name, baseURL, apiKey, proxyURL string, models []string, enabled bool) error {
+func (s *Store) UpdateProvider(name, apiType, baseURL, apiKey, proxyURL string, models []string, enabled bool) error {
 	result := s.db.Model(&Provider{}).Where("name = ?", name).Updates(map[string]any{
+		"api_type":  apiType,
 		"base_url":  baseURL,
 		"api_key":   apiKey,
 		"proxy_url": proxyURL,

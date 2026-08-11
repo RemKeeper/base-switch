@@ -52,7 +52,7 @@
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>名称</th><th>Base URL</th><th>代理</th><th>模型数</th><th>状态</th><th>操作</th></tr></thead>
+          <thead><tr><th>名称</th><th>协议</th><th>Base URL</th><th>代理</th><th>模型数</th><th>状态</th><th>操作</th></tr></thead>
           <tbody id="providersTable"></tbody>
         </table>
       </div>
@@ -97,6 +97,12 @@
       <input id="editingName" type="hidden" />
       <label>名称
         <input id="providerName" required placeholder="openai" />
+      </label>
+      <label>API 协议
+        <select id="providerApiType">
+          <option value="openai">OpenAI</option>
+          <option value="anthropic">Anthropic</option>
+        </select>
       </label>
       <label>Base URL
         <input id="providerBaseUrl" required placeholder="https://api.openai.com" />

@@ -72,6 +72,7 @@ function renderProviders() {
   const rows = state.providers.map((provider) => `
     <tr>
       <td><strong>${escapeHtml(provider.name)}</strong><br><small>${escapeHtml(provider.api_key || '')}</small></td>
+      <td><span class="badge">${escapeHtml(provider.api_type || 'openai')}</span></td>
       <td>${escapeHtml(provider.base_url)}</td>
       <td>${provider.proxy_url ? `<span class="badge on">已配置</span><br><small>${escapeHtml(provider.proxy_url)}</small>` : '<span class="badge off">直连</span>'}</td>
       <td>${provider.models?.length || 0}</td>
@@ -82,7 +83,7 @@ function renderProviders() {
       </td>
     </tr>
   `).join('');
-  $('providersTable').innerHTML = rows || '<tr><td colspan="6">暂无 Provider</td></tr>';
+  $('providersTable').innerHTML = rows || '<tr><td colspan="7">暂无 Provider</td></tr>';
   document.querySelectorAll('[data-edit]').forEach((button) => {
     button.addEventListener('click', () => openProviderDialog(state.providers.find((item) => item.name === button.dataset.edit)));
   });
@@ -127,6 +128,7 @@ function openProviderDialog(provider = null) {
   $('editingName').value = provider?.name || '';
   $('providerName').value = provider?.name || '';
   $('providerName').disabled = Boolean(provider);
+  $('providerApiType').value = provider?.api_type || 'openai';
   $('providerBaseUrl').value = provider?.base_url || '';
   $('providerApiKey').value = '';
   $('providerApiKey').required = !provider;
@@ -144,6 +146,7 @@ async function saveProvider(event) {
   const apiKey = $('providerApiKey').value.trim();
   const payload = {
     name: $('providerName').value.trim(),
+    api_type: $('providerApiType').value,
     base_url: $('providerBaseUrl').value.trim(),
     proxy_url: $('providerProxyUrl').value.trim(),
     models: lines($('providerModels').value),

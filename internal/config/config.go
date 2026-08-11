@@ -9,6 +9,7 @@ import (
 // ProviderConfig 单个 AI Provider 配置
 type ProviderConfig struct {
 	Name     string   `json:"name"`
+	APIType  string   `json:"api_type"`
 	BaseURL  string   `json:"base_url"`
 	APIKey   string   `json:"api_key"`
 	ProxyURL string   `json:"proxy_url"`
@@ -79,6 +80,11 @@ func Load(path string) (*AppConfig, error) {
 	}
 	if cfg.ModelRefresh.IntervalSeconds <= 0 {
 		cfg.ModelRefresh.IntervalSeconds = 3600
+	}
+	for i := range cfg.Providers {
+		if cfg.Providers[i].APIType == "" {
+			cfg.Providers[i].APIType = "openai"
+		}
 	}
 
 	return &cfg, nil
