@@ -19,6 +19,7 @@ func TestCheckSingleModelAPIType(t *testing.T) {
 		expectedAuth     string
 		expectedAPIKey   string
 		expectedVersion  string
+		expectedBeta     string
 		expectStreamBody bool
 	}{
 		{
@@ -34,6 +35,14 @@ func TestCheckSingleModelAPIType(t *testing.T) {
 			expectedPath:    "/v1/messages",
 			expectedAPIKey:  "test-key",
 			expectedVersion: "2023-06-01",
+		},
+		{
+			name:            "anthropic 1m",
+			apiType:         "anthropic",
+			expectedPath:    "/v1/messages",
+			expectedAPIKey:  "test-key",
+			expectedVersion: "2023-06-01",
+			expectedBeta:    "context-1m-2025-08-07",
 		},
 	}
 
@@ -52,12 +61,19 @@ func TestCheckSingleModelAPIType(t *testing.T) {
 				if got := r.Header.Get("anthropic-version"); got != tt.expectedVersion {
 					t.Errorf("anthropic-version = %q, want %q", got, tt.expectedVersion)
 				}
+				if got := r.Header.Get("anthropic-beta"); got != tt.expectedBeta {
+					t.Errorf("anthropic-beta = %q, want %q", got, tt.expectedBeta)
+				}
 
 				var body map[string]any
 				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 					t.Fatalf("decode request body: %v", err)
 				}
-				if body["model"] != "test-model" || body["max_tokens"] != float64(1) {
+				expectedModel := "test-model"
+				if tt.expectedBeta != "" {
+					expectedModel = "test-model[1M]"
+				}
+				if body["model"] != expectedModel || body["max_tokens"] != float64(1) {
 					t.Errorf("unexpected request body: %#v", body)
 				}
 				_, hasStream := body["stream"]
@@ -72,9 +88,13 @@ func TestCheckSingleModelAPIType(t *testing.T) {
 			defer server.Close()
 
 			h := NewHandler(nil, &config.AuthConfig{}, &config.ManagementConfig{}, nil)
+			model := "test-model"
+			if tt.expectedBeta != "" {
+				model = "test-model[1M]"
+			}
 			result := h.checkSingleModel(context.Background(), storage.Provider{
 				Name: "test-provider", APIType: tt.apiType, BaseURL: server.URL, APIKey: "test-key",
-			}, "test-model", "ping", 5)
+			}, model, "ping", 5)
 
 			if !result.Alive || result.StatusCode != http.StatusOK || result.Error != "" {
 				t.Fatalf("unexpected result: %#v", result)
@@ -86,5 +106,38 @@ func TestCheckSingleModelAPIType(t *testing.T) {
 func TestNormalizeAPITypeDefaultsToOpenAI(t *testing.T) {
 	if got := normalizeAPIType(""); got != "openai" {
 		t.Fatalf("normalizeAPIType(\"\") = %q, want openai", got)
+	}
+}
+
+func TestCheckSingleModelRetriesWhenAnthropicRequires1MContext(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			if beta := r.Header.Get("anthropic-beta"); beta != "" {
+				t.Errorf("first request anthropic-beta = %q, want empty", beta)
+			}
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"1m 上下文已经全量可用，请启用 1m 上下文后重试","type":"error"}`))
+			return
+		}
+		if beta := r.Header.Get("anthropic-beta"); beta != "context-1m-2025-08-07" {
+			t.Errorf("retry anthropic-beta = %q", beta)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"type":"message"}`))
+	}))
+	defer server.Close()
+
+	h := NewHandler(nil, &config.AuthConfig{}, &config.ManagementConfig{}, nil)
+	result := h.checkSingleModel(context.Background(), storage.Provider{
+		Name: "test-provider", APIType: "anthropic", BaseURL: server.URL, APIKey: "test-key",
+	}, "claude-opus-4-7", "ping", 5)
+
+	if requests != 2 {
+		t.Fatalf("requests = %d, want 2", requests)
+	}
+	if !result.Alive || result.StatusCode != http.StatusOK || result.Error != "" {
+		t.Fatalf("unexpected result: %#v", result)
 	}
 }

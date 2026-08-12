@@ -891,34 +891,13 @@ func (h *Handler) checkSingleModel(parent context.Context, p storage.Provider, m
 	ctx, cancel := context.WithTimeout(parent, time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
 
-	request := h.providerClient(p.ProxyURL).R().SetContext(ctx)
-	var targetURL string
-	if normalizeAPIType(p.APIType) == "anthropic" {
-		targetURL = strings.TrimRight(p.BaseURL, "/") + "/v1/messages"
-		request.SetHeader("x-api-key", p.APIKey).
-			SetHeader("anthropic-version", "2023-06-01").
-			SetBody(gin.H{
-				"model":      model,
-				"max_tokens": 1,
-				"messages": []gin.H{
-					{"role": "user", "content": prompt},
-				},
-			})
-	} else {
-		targetURL = strings.TrimRight(p.BaseURL, "/") + "/v1/chat/completions"
-		request.SetHeader("Authorization", "Bearer "+p.APIKey).
-			SetBody(gin.H{
-				"model":      model,
-				"stream":     false,
-				"max_tokens": 1,
-				"messages": []gin.H{
-					{"role": "user", "content": prompt},
-				},
-			})
-	}
-
 	start := time.Now()
-	resp, err := request.Post(targetURL)
+	use1MContext := anthropicModelUses1MContext(model)
+	resp, err := h.sendModelCheckRequest(ctx, p, model, prompt, use1MContext)
+	if err == nil && normalizeAPIType(p.APIType) == "anthropic" && !use1MContext && anthropicResponseRequires1MContext(resp) {
+		resp.Body.Close()
+		resp, err = h.sendModelCheckRequest(ctx, p, model, prompt, true)
+	}
 	result.LatencyMS = time.Since(start).Milliseconds()
 
 	if err != nil {
@@ -933,6 +912,40 @@ func (h *Handler) checkSingleModel(parent context.Context, p storage.Provider, m
 		result.Error = truncateForResponse(resp.String(), 300)
 	}
 	return result
+}
+
+func (h *Handler) sendModelCheckRequest(ctx context.Context, p storage.Provider, model, prompt string, use1MContext bool) (*req.Response, error) {
+	request := h.providerClient(p.ProxyURL).R().SetContext(ctx)
+	if normalizeAPIType(p.APIType) == "anthropic" {
+		request.SetHeader("x-api-key", p.APIKey).
+			SetHeader("anthropic-version", "2023-06-01").
+			SetBody(gin.H{
+				"model":      model,
+				"max_tokens": 1,
+				"messages": []gin.H{
+					{"role": "user", "content": prompt},
+				},
+			})
+		if use1MContext {
+			request.SetHeader("anthropic-beta", "context-1m-2025-08-07")
+		}
+		return request.Post(strings.TrimRight(p.BaseURL, "/") + "/v1/messages")
+	}
+
+	return request.SetHeader("Authorization", "Bearer "+p.APIKey).
+		SetBody(gin.H{
+			"model":      model,
+			"stream":     false,
+			"max_tokens": 1,
+			"messages": []gin.H{
+				{"role": "user", "content": prompt},
+			},
+		}).
+		Post(strings.TrimRight(p.BaseURL, "/") + "/v1/chat/completions")
+}
+
+func anthropicResponseRequires1MContext(resp *req.Response) bool {
+	return resp != nil && !resp.IsSuccessState() && strings.Contains(strings.ToLower(resp.String()), "1m 上下文")
 }
 
 func truncateForResponse(value string, maxLen int) string {
@@ -974,6 +987,10 @@ func normalizeAPIType(apiType string) string {
 		return "openai"
 	}
 	return apiType
+}
+
+func anthropicModelUses1MContext(model string) bool {
+	return strings.Contains(strings.ToUpper(model), "[1M]")
 }
 
 func splitModels(modelsStr string) []string {
