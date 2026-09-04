@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net"
 	"net/http"
 	"strings"
@@ -73,6 +74,12 @@ func (h *Handler) buildRouter() *gin.Engine {
 		providers.PUT("/:name", h.handleAdminUpdateProvider)
 		providers.DELETE("/:name", h.handleAdminDeleteProvider)
 		providers.POST("/:name/refresh-models", h.handleAdminRefreshProviderModels)
+
+		groups := admin.Group("/route-groups")
+		groups.GET("", h.handleAdminListRouteGroups)
+		groups.POST("", h.handleAdminAddRouteGroup)
+		groups.PUT("/:name", h.handleAdminUpdateRouteGroup)
+		groups.DELETE("/:name", h.handleAdminDeleteRouteGroup)
 
 		usage := admin.Group("/usage")
 		usage.GET("/summary", h.handleAdminUsageSummary)
@@ -229,7 +236,7 @@ func (h *Handler) HandleChatCompletions(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, errorResponse("model 字段不能为空"))
 		return
 	}
-	prov, actualModel, err := h.manager.ResolveModel(chatReq.Model)
+	prov, actualModel, _, candidates, err := h.resolveChatTarget(chatReq.Model)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, errorResponse(err.Error()))
 		return
@@ -239,12 +246,132 @@ func (h *Handler) HandleChatCompletions(c *gin.Context) {
 	if chatReq.Stream {
 		newBody = h.ensureStreamUsageOption(newBody)
 	}
-	targetURL := strings.TrimRight(prov.BaseURL, "/") + "/v1/chat/completions"
 	if chatReq.Stream {
-		h.forwardStream(c.Writer, prov.Name, actualModel, c.Request.URL.Path, prov.APIKey, prov.ProxyURL, targetURL, newBody)
+		h.forwardStreamCandidates(c.Writer, candidates, actualModel, c.Request.URL.Path, newBody)
 		return
 	}
-	h.forwardNonStream(c.Writer, prov.Name, actualModel, c.Request.URL.Path, prov.APIKey, prov.ProxyURL, targetURL, newBody)
+	h.forwardNonStreamCandidates(c.Writer, candidates, actualModel, c.Request.URL.Path, newBody)
+}
+
+func (h *Handler) resolveChatTarget(modelID string) (*storage.Provider, string, *storage.RouteGroup, []*storage.Provider, error) {
+	group, members, err := h.manager.ResolveRouteGroup(modelID)
+	if err != nil {
+		return nil, "", nil, nil, err
+	}
+	if group == nil {
+		p, model, err := h.manager.ResolveModel(modelID)
+		if err != nil {
+			return nil, "", nil, nil, err
+		}
+		return p, model, nil, []*storage.Provider{p}, nil
+	}
+	if len(members) == 0 {
+		return nil, "", nil, nil, fmt.Errorf("路由分组 '%s' 没有成员", modelID)
+	}
+	start := rand.New(rand.NewSource(time.Now().UnixNano())).Intn(len(members))
+	candidates := make([]*storage.Provider, 0, len(members))
+	actualModel := ""
+	for i := 0; i < len(members); i++ {
+		member := members[(start+i)%len(members)]
+		p, lookupErr := h.manager.GetProviderByName(member.Provider)
+		if lookupErr != nil {
+			return nil, "", nil, nil, lookupErr
+		}
+		if p == nil || !p.Enabled {
+			continue
+		}
+		if actualModel == "" {
+			actualModel = member.Model
+		}
+		copyP := *p
+		copyP.Models = member.Model
+		candidates = append(candidates, &copyP)
+	}
+	if len(candidates) == 0 {
+		return nil, "", nil, nil, fmt.Errorf("路由分组 '%s' 没有可用 Provider", modelID)
+	}
+	if !group.AutoRetry && len(candidates) > 1 {
+		candidates = candidates[:1]
+	}
+	return candidates[0], actualModel, group, candidates, nil
+}
+
+func (h *Handler) forwardNonStreamCandidates(w http.ResponseWriter, candidates []*storage.Provider, model, endpoint string, body []byte) {
+	max := len(candidates)
+	if max > 4 {
+		max = 4
+	} // 首选 + 最多 3 次重试
+	var lastErr error
+	for i := 0; i < max; i++ {
+		p := candidates[i]
+		candidateBody := h.rewriteModelField(body, p.Models)
+		resp, err := h.providerClient(p.ProxyURL).R().SetHeader("Authorization", "Bearer "+p.APIKey).SetBodyJsonBytes(candidateBody).Post(strings.TrimRight(p.BaseURL, "/") + "/v1/chat/completions")
+		if err == nil && resp.IsSuccessState() {
+			defer resp.Body.Close()
+			copyUpstreamHeaders(w, resp.Header)
+			w.WriteHeader(resp.StatusCode)
+			data := resp.Bytes()
+			_, _ = w.Write(data)
+			h.recordTokenUsage(p.Name, model, endpoint, tokenusage.ExtractUsageFromJSON(data))
+			return
+		}
+		if resp != nil {
+			lastErr = fmt.Errorf("%s 返回 HTTP %d", p.Name, resp.StatusCode)
+			resp.Body.Close()
+		} else {
+			lastErr = err
+		}
+		log.Printf("[WARN] Provider %s 请求失败，准备切换候选: %v", p.Name, lastErr)
+	}
+	http.Error(w, fmt.Sprintf(`{"error":{"message":"上游请求失败: %v"}}`, lastErr), http.StatusBadGateway)
+}
+
+func (h *Handler) forwardStreamCandidates(w http.ResponseWriter, candidates []*storage.Provider, model, endpoint string, body []byte) {
+	max := len(candidates)
+	if max > 4 {
+		max = 4
+	}
+	for i := 0; i < max; i++ {
+		p := candidates[i]
+		candidateBody := h.rewriteModelField(body, p.Models)
+		resp, err := h.providerClient(p.ProxyURL).R().SetHeader("Authorization", "Bearer "+p.APIKey).SetBodyJsonBytes(candidateBody).DisableAutoReadResponse().Post(strings.TrimRight(p.BaseURL, "/") + "/v1/chat/completions")
+		if err == nil && resp.IsSuccessState() {
+			h.forwardStreamResponse(w, p.Name, model, endpoint, resp)
+			return
+		}
+		if resp != nil {
+			resp.Body.Close()
+		}
+	}
+	http.Error(w, `{"error":{"message":"上游请求失败"}}`, http.StatusBadGateway)
+}
+
+func (h *Handler) forwardStreamResponse(w http.ResponseWriter, providerName, modelName, endpoint string, resp *req.Response) {
+	defer resp.Body.Close()
+	copyUpstreamHeaders(w, resp.Header)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(resp.StatusCode)
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return
+	}
+	buf := make([]byte, 4096)
+	var capture []byte
+	defer func() { h.recordTokenUsage(providerName, modelName, endpoint, tokenusage.ExtractUsageFromSSE(capture)) }()
+	for {
+		n, err := resp.Response.Body.Read(buf)
+		if n > 0 {
+			capture = append(capture, buf[:n]...)
+			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
+				return
+			}
+			flusher.Flush()
+		}
+		if err != nil {
+			return
+		}
+	}
 }
 
 func (h *Handler) handleGenericProxy(c *gin.Context) {
@@ -594,6 +721,84 @@ type AdminProviderRequest struct {
 	ProxyURL string   `json:"proxy_url"`
 	Models   []string `json:"models"`
 	Enabled  bool     `json:"enabled"`
+}
+
+type AdminRouteGroupRequest struct {
+	Name      string                     `json:"name"`
+	Members   []storage.RouteGroupMember `json:"members"`
+	AutoRetry bool                       `json:"auto_retry"`
+}
+
+func routeGroupResponse(row storage.RouteGroup, members []storage.RouteGroupMember) gin.H {
+	return gin.H{"id": row.ID, "name": row.Name, "members": members, "auto_retry": row.AutoRetry, "created_at": row.CreatedAt, "updated_at": row.UpdatedAt}
+}
+
+func (h *Handler) handleAdminListRouteGroups(c *gin.Context) {
+	rows, err := h.manager.GetStore().ListRouteGroups()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse("获取路由分组失败: "+err.Error()))
+		return
+	}
+	data := make([]gin.H, 0, len(rows))
+	for _, row := range rows {
+		members, memberErr := h.manager.GetStore().GroupMembers(&row)
+		if memberErr != nil {
+			c.JSON(http.StatusInternalServerError, errorResponse("解析路由分组失败: "+memberErr.Error()))
+			return
+		}
+		data = append(data, routeGroupResponse(row, members))
+	}
+	c.JSON(http.StatusOK, gin.H{"object": "list", "data": data})
+}
+
+func (h *Handler) handleAdminAddRouteGroup(c *gin.Context) {
+	var req AdminRouteGroupRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("请求体解析失败: "+err.Error()))
+		return
+	}
+	if strings.TrimSpace(req.Name) == "" || len(req.Members) == 0 {
+		c.JSON(http.StatusBadRequest, errorResponse("name 和 members 不能为空"))
+		return
+	}
+	if existing, err := h.manager.GetStore().GetRouteGroup(req.Name); err != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse(err.Error()))
+		return
+	} else if existing != nil {
+		c.JSON(http.StatusConflict, errorResponse("路由分组已存在"))
+		return
+	}
+	if err := h.manager.GetStore().SaveRouteGroup(req.Name, req.Members, req.AutoRetry); err != nil {
+		c.JSON(http.StatusInternalServerError, errorResponse(err.Error()))
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"message": "路由分组创建成功"})
+}
+
+func (h *Handler) handleAdminUpdateRouteGroup(c *gin.Context) {
+	name := c.Param("name")
+	var req AdminRouteGroupRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("请求体解析失败: "+err.Error()))
+		return
+	}
+	if len(req.Members) == 0 {
+		c.JSON(http.StatusBadRequest, errorResponse("members 不能为空"))
+		return
+	}
+	if err := h.manager.GetStore().UpdateRouteGroup(name, req.Members, req.AutoRetry); err != nil {
+		c.JSON(http.StatusNotFound, errorResponse(err.Error()))
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "路由分组更新成功"})
+}
+
+func (h *Handler) handleAdminDeleteRouteGroup(c *gin.Context) {
+	if err := h.manager.GetStore().DeleteRouteGroup(c.Param("name")); err != nil {
+		c.JSON(http.StatusNotFound, errorResponse(err.Error()))
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "路由分组删除成功"})
 }
 
 type AdminModelCheckRequest struct {

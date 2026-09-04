@@ -2,6 +2,7 @@ const state = {
   apiBase: localStorage.getItem('baseSwitch.apiBase') || '',
   adminKey: localStorage.getItem('baseSwitch.adminKey') || '',
   providers: [],
+  routeGroups: [],
   checkResults: []
 };
 
@@ -13,7 +14,11 @@ function init() {
   $('settingsForm').addEventListener('submit', saveSettings);
   $('refreshAll').addEventListener('click', refreshAll);
   $('newProvider').addEventListener('click', () => openProviderDialog());
+  $('newRouteGroup').addEventListener('click', () => openRouteGroupDialog());
   $('providerForm').addEventListener('submit', saveProvider);
+  $('routeGroupForm').addEventListener('submit', saveRouteGroup);
+  $('addRouteGroupMember').addEventListener('click', () => addRouteGroupMember());
+  $('deleteRouteGroup').addEventListener('click', deleteRouteGroup);
   $('deleteProvider').addEventListener('click', deleteProvider);
   $('checkModels').addEventListener('click', checkModels);
   $('loadUsage').addEventListener('click', loadUsage);
@@ -51,13 +56,105 @@ async function api(path, options = {}) {
 async function refreshAll() {
   setStatus('连接中...', '');
   try {
-    await Promise.all([loadProviders(), loadUsage(true)]);
+    await Promise.all([loadProviders(), loadRouteGroups(), loadUsage(true)]);
     setStatus('已连接', 'ok');
     toast('刷新完成');
   } catch (error) {
     setStatus('连接失败', 'bad');
     toast(error.message);
   }
+}
+
+async function loadRouteGroups() {
+  const data = await api('/admin/route-groups');
+  state.routeGroups = data.data || [];
+  renderRouteGroups();
+  updateMetrics();
+}
+
+function renderRouteGroups() {
+  const node = $('routeGroupsList');
+  if (!state.routeGroups.length) {
+    node.innerHTML = '<div class="empty-state">暂无路由分组，点击“新建分组”开始配置。</div>';
+    return;
+  }
+  node.innerHTML = state.routeGroups.map((group) => `
+    <article class="group-card">
+      <div class="group-card-header">
+        <div>
+          <strong>${escapeHtml(group.name)}</strong>
+          <span class="badge ${group.auto_retry ? 'on' : 'off'}">${group.auto_retry ? '自动重试' : '不重试'}</span>
+        </div>
+        <button class="ghost" data-edit-group="${escapeAttr(group.name)}">编辑</button>
+      </div>
+      <div class="member-tags">
+        ${(group.members || []).map((member) => `<span class="member-tag"><b>${escapeHtml(member.provider)}</b><span>/</span>${escapeHtml(member.model)}</span>`).join('') || '<span class="hint">暂无成员</span>'}
+      </div>
+      <small class="hint">${(group.members || []).length} 个成员 · 客户端模型名：<code>${escapeHtml(group.name)}</code></small>
+    </article>
+  `).join('');
+  node.querySelectorAll('[data-edit-group]').forEach((button) => {
+    button.addEventListener('click', () => openRouteGroupDialog(state.routeGroups.find((item) => item.name === button.dataset.editGroup)));
+  });
+}
+
+function openRouteGroupDialog(group = null) {
+  $('routeGroupDialogTitle').textContent = group ? `编辑分组 ${group.name}` : '新建路由分组';
+  $('editingRouteGroupName').value = group?.name || '';
+  $('routeGroupName').value = group?.name || '';
+  $('routeGroupName').disabled = Boolean(group);
+  $('routeGroupAutoRetry').checked = group?.auto_retry ?? true;
+  $('routeGroupMembers').innerHTML = '';
+  (group?.members?.length ? group.members : [{ provider: '', model: '' }]).forEach((member) => addRouteGroupMember(member));
+  $('deleteRouteGroup').hidden = !group;
+  $('routeGroupDialog').showModal();
+}
+
+function addRouteGroupMember(member = {}) {
+  const row = document.createElement('div');
+  row.className = 'member-row';
+  row.innerHTML = `
+    <select class="group-provider" aria-label="Provider">
+      <option value="">选择 Provider</option>
+      ${state.providers.filter((item) => item.enabled).map((provider) => `<option value="${escapeAttr(provider.name)}">${escapeHtml(provider.name)}</option>`).join('')}
+    </select>
+    <input class="group-model" placeholder="下级模型名称，如 gpt-4o" value="${escapeAttr(member.model || '')}" />
+    <button class="ghost remove-member" type="button" aria-label="删除成员">移除</button>
+  `;
+  row.querySelector('.group-provider').value = member.provider || '';
+  row.querySelector('.remove-member').addEventListener('click', () => row.remove());
+  $('routeGroupMembers').appendChild(row);
+}
+
+async function saveRouteGroup(event) {
+  event.preventDefault();
+  const editingName = $('editingRouteGroupName').value;
+  const members = [...document.querySelectorAll('#routeGroupMembers .member-row')].map((row) => ({
+    provider: row.querySelector('.group-provider').value,
+    model: row.querySelector('.group-model').value.trim()
+  })).filter((member) => member.provider && member.model);
+  if (!members.length) { toast('请至少配置一个有效成员'); return; }
+  const name = $('routeGroupName').value.trim();
+  const payload = { name, members, auto_retry: $('routeGroupAutoRetry').checked };
+  try {
+    await api(editingName ? `/admin/route-groups/${encodeURIComponent(editingName)}` : '/admin/route-groups', {
+      method: editingName ? 'PUT' : 'POST', body: JSON.stringify(payload)
+    });
+    $('routeGroupDialog').close();
+    await loadRouteGroups();
+    toast('路由分组已保存');
+  } catch (error) { toast(error.message); }
+}
+
+async function deleteRouteGroup() {
+  const name = $('editingRouteGroupName').value;
+  if (!name || !confirm(`确认删除路由分组：${name}？`)) return;
+  try {
+    await api(`/admin/route-groups/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    $('routeGroupDialog').close();
+    await loadRouteGroups();
+    toast('路由分组已删除');
+  } catch (error) { toast(error.message); }
 }
 
 async function loadProviders() {

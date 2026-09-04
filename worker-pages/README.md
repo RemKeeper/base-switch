@@ -11,6 +11,7 @@
 ## 功能
 
 - Provider 列表、创建、编辑、删除
+- 路由分组列表、创建、编辑、删除，以及 Provider/Model 成员配置和自动重试开关
 - Token 用量聚合统计
 - 模型存活检测，调用后端 `/admin/models/check` 并流式读取 NDJSON 结果
 

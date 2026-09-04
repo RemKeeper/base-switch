@@ -36,5 +36,14 @@
       "enabled": true,
       "_comment": "api_type 支持 openai 或 anthropic，默认 openai；proxy_url 可选；models 为空时将自动调用 /v1/models 发现模型"
     }
+  ],
+  "route_groups": [
+    {
+      "name": "smart-model",
+      "members": [
+        { "provider": "example-provider", "model": "gpt-4o" }
+      ],
+      "auto_retry": true
+    }
   ]
 }

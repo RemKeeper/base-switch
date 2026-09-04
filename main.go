@@ -44,6 +44,9 @@ func main() {
 	if err := store.SeedFromConfig(cfg.Providers); err != nil {
 		log.Fatalf("❌ 初始化 Provider 失败: %v", err)
 	}
+	if err := store.SeedRouteGroups(cfg.RouteGroups); err != nil {
+		log.Fatalf("❌ 初始化路由分组失败: %v", err)
+	}
 
 	providerCount, _ := store.GetProviderCount()
 	log.Printf("🔌 已加载 %d 个 Provider", providerCount)

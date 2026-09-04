@@ -58,6 +58,17 @@
       </div>
     </section>
 
+    <section class="card stack">
+      <div class="section-title">
+        <div>
+          <h2>路由分组</h2>
+          <p class="hint">客户端将分组名称作为 model 使用，系统会随机选择下级 Provider/Model。</p>
+        </div>
+        <button id="newRouteGroup" type="button">新建分组</button>
+      </div>
+      <div id="routeGroupsList" class="group-list"></div>
+    </section>
+
     <section class="grid two">
       <section class="card stack">
         <div class="section-title">
@@ -120,6 +131,32 @@
       <div class="actions">
         <button class="danger" id="deleteProvider" type="button">删除</button>
         <button id="saveProvider" type="submit" value="default">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="routeGroupDialog">
+    <form method="dialog" class="modal stack" id="routeGroupForm">
+      <div class="section-title">
+        <h2 id="routeGroupDialogTitle">新建路由分组</h2>
+        <button class="ghost" value="cancel" type="submit">关闭</button>
+      </div>
+      <input id="editingRouteGroupName" type="hidden" />
+      <label>分组名称
+        <input id="routeGroupName" required placeholder="smart-model" />
+      </label>
+      <label class="checkline"><input id="routeGroupAutoRetry" type="checkbox" /> 启用自动重试（最多切换 3 个其他 Provider）</label>
+      <div class="member-editor">
+        <div class="section-title">
+          <strong>下级 Provider / Model</strong>
+          <button class="ghost" id="addRouteGroupMember" type="button">添加成员</button>
+        </div>
+        <div id="routeGroupMembers"></div>
+        <p class="hint">每个成员可以使用不同 Provider 和模型。至少配置一个成员。</p>
+      </div>
+      <div class="actions">
+        <button class="danger" id="deleteRouteGroup" type="button">删除</button>
+        <button id="saveRouteGroup" type="submit" value="default">保存分组</button>
       </div>
     </form>
   </dialog>

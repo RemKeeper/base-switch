@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"baseSwitch/internal/config"
@@ -100,6 +101,50 @@ func TestCheckSingleModelAPIType(t *testing.T) {
 				t.Fatalf("unexpected result: %#v", result)
 			}
 		})
+	}
+}
+
+func TestForwardNonStreamCandidatesRetriesAtMostThreeTimes(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	h := NewHandler(nil, &config.AuthConfig{}, &config.ManagementConfig{}, nil)
+	candidates := make([]*storage.Provider, 5)
+	for i := range candidates {
+		candidates[i] = &storage.Provider{Name: "p", BaseURL: server.URL, Models: "model"}
+	}
+	recorder := httptest.NewRecorder()
+	h.forwardNonStreamCandidates(recorder, candidates, "model", "/v1/chat/completions", []byte(`{"model":"group"}`))
+	if requests != 4 {
+		t.Fatalf("requests = %d, want 4 (initial + 3 retries)", requests)
+	}
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", recorder.Code)
+	}
+}
+
+func TestForwardNonStreamCandidatesUsesMemberModel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["model"] != "actual-model" {
+			t.Errorf("model = %v", body["model"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+	h := NewHandler(nil, &config.AuthConfig{}, &config.ManagementConfig{}, nil)
+	recorder := httptest.NewRecorder()
+	h.forwardNonStreamCandidates(recorder, []*storage.Provider{{Name: "p", BaseURL: server.URL, Models: "actual-model"}}, "actual-model", "/v1/chat/completions", []byte(`{"model":"group"}`))
+	if !strings.Contains(recorder.Body.String(), `"ok":true`) {
+		t.Fatalf("body = %s", recorder.Body.String())
 	}
 }
 

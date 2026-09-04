@@ -14,6 +14,7 @@
 - **Worker Pages 管理面板** — `worker-pages/` 提供可直接部署的静态管理页
 - **模型存活检测** — 通过管理 API 批量检测各 Provider 模型是否可用
 - **Token 用量统计** — 插件式统计各 Provider / 模型的请求次数和 token 消耗
+- **路由分组与自动重试** — 将分组名作为模型名，随机选择下级 Provider/Model；可选失败后最多切换 3 个其他成员重试
 - **Gin 路由管理** — 基于 Gin Router 进行路由分组、中间件鉴权和 CORS 管理
 - **Chrome 指纹伪装** — 基于 `req/v3` 的 Chrome 指纹模拟，降低被上游拦截风险
 - **SQLite + GORM 持久化** — Provider 配置与 Token 用量统计基于 GORM + SQLite 持久化，重启不丢失
@@ -67,6 +68,28 @@ go build -o baseSwitch .
 | `model_refresh.enabled` | bool | 是否启用 Provider 模型列表自动刷新 |
 | `model_refresh.interval_seconds` | int | 自动刷新间隔，单位秒，默认 `3600` |
 | `providers` | []object | AI Provider 列表 |
+| `route_groups` | []object | 路由分组列表 |
+
+### 路由分组
+
+请求模型名称等于分组 `name` 时，系统会从 `members` 中随机选择一个 Provider/Model。启用 `auto_retry` 后，首选 Provider 返回失败或请求错误时，最多再尝试 3 个其他分组成员；流式响应仅在上游尚未开始返回内容时切换。
+
+```json
+{
+  "route_groups": [
+    {
+      "name": "smart-model",
+      "members": [
+        { "provider": "example-provider", "model": "gpt-4o" },
+        { "provider": "backup-provider", "model": "gpt-4o-mini" }
+      ],
+      "auto_retry": true
+    }
+  ]
+}
+```
+
+也可通过管理 API 管理：`GET/POST /admin/route-groups`、`PUT/DELETE /admin/route-groups/:name`。
 
 ### 模型自动刷新配置
 

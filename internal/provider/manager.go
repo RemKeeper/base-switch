@@ -28,6 +28,15 @@ func (m *Manager) ResolveModel(modelID string) (*storage.Provider, string, error
 	return m.store.ResolveModel(modelID)
 }
 
+func (m *Manager) ResolveRouteGroup(name string) (*storage.RouteGroup, []storage.RouteGroupMember, error) {
+	g, err := m.store.GetRouteGroup(name)
+	if err != nil || g == nil {
+		return g, nil, err
+	}
+	members, err := m.store.GroupMembers(g)
+	return g, members, err
+}
+
 // GetProviderCount 获取 Provider 数量
 func (m *Manager) GetProviderCount() (int, error) {
 	return m.store.GetProviderCount()

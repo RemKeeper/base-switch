@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,6 +27,20 @@ type Provider struct {
 	Enabled   bool      `json:"enabled" gorm:"not null;default:true;index"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type RouteGroup struct {
+	ID        int64     `json:"id" gorm:"primaryKey;autoIncrement"`
+	Name      string    `json:"name" gorm:"uniqueIndex;not null"`
+	Members   string    `json:"members" gorm:"not null;default:'[]'"`
+	AutoRetry bool      `json:"auto_retry" gorm:"not null;default:false"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type RouteGroupMember struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
 }
 
 // TableName 指定 Provider 表名，保持兼容已有 SQLite 表。
@@ -81,7 +96,7 @@ func New(dbPath string) (*Store, error) {
 
 // migrate 创建表
 func (s *Store) migrate() error {
-	return s.db.AutoMigrate(&Provider{})
+	return s.db.AutoMigrate(&Provider{}, &RouteGroup{})
 }
 
 // Close 关闭数据库
@@ -119,6 +134,76 @@ func (s *Store) SeedFromConfig(providers []config.ProviderConfig) error {
 	}
 	s.invalidateCache()
 	return nil
+}
+
+func (s *Store) SeedRouteGroups(groups []config.RouteGroupConfig) error {
+	for _, g := range groups {
+		members, err := json.Marshal(g.Members)
+		if err != nil {
+			return fmt.Errorf("编码路由分组 %s 失败: %w", g.Name, err)
+		}
+		row := RouteGroup{Name: g.Name, Members: string(members), AutoRetry: g.AutoRetry}
+		if err := s.db.Where("name = ?", g.Name).Assign(map[string]any{"members": string(members), "auto_retry": g.AutoRetry}).FirstOrCreate(&row).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) ListRouteGroups() ([]RouteGroup, error) {
+	var rows []RouteGroup
+	err := s.db.Order("name").Find(&rows).Error
+	return rows, err
+}
+func (s *Store) GetRouteGroup(name string) (*RouteGroup, error) {
+	var row RouteGroup
+	err := s.db.Where("name = ?", name).First(&row).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	return &row, err
+}
+func (s *Store) SaveRouteGroup(name string, members []RouteGroupMember, autoRetry bool) error {
+	data, err := json.Marshal(members)
+	if err != nil {
+		return err
+	}
+	row := RouteGroup{Name: name, Members: string(data), AutoRetry: autoRetry}
+	if err := s.db.Create(&row).Error; err != nil {
+		return fmt.Errorf("新增路由分组 %s 失败: %w", name, err)
+	}
+	return nil
+}
+func (s *Store) UpdateRouteGroup(name string, members []RouteGroupMember, autoRetry bool) error {
+	data, err := json.Marshal(members)
+	if err != nil {
+		return err
+	}
+	result := s.db.Model(&RouteGroup{}).Where("name = ?", name).Updates(map[string]any{"members": string(data), "auto_retry": autoRetry})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("路由分组 '%s' 不存在", name)
+	}
+	return nil
+}
+func (s *Store) DeleteRouteGroup(name string) error {
+	result := s.db.Where("name = ?", name).Delete(&RouteGroup{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("路由分组 '%s' 不存在", name)
+	}
+	return nil
+}
+func (s *Store) GroupMembers(row *RouteGroup) ([]RouteGroupMember, error) {
+	var members []RouteGroupMember
+	if err := json.Unmarshal([]byte(row.Members), &members); err != nil {
+		return nil, err
+	}
+	return members, nil
 }
 
 // ListEnabledProviders 列出所有启用的 Provider

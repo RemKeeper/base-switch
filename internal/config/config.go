@@ -17,6 +17,17 @@ type ProviderConfig struct {
 	Enabled  bool     `json:"enabled"`
 }
 
+type RouteGroupMemberConfig struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+}
+
+type RouteGroupConfig struct {
+	Name      string                   `json:"name"`
+	Members   []RouteGroupMemberConfig `json:"members"`
+	AutoRetry bool                     `json:"auto_retry"`
+}
+
 // ListenConfig 监听配置
 type ListenConfig struct {
 	Host string `json:"host"`
@@ -54,6 +65,7 @@ type AppConfig struct {
 	Management   ManagementConfig   `json:"management"`
 	ModelRefresh ModelRefreshConfig `json:"model_refresh"`
 	Providers    []ProviderConfig   `json:"providers"`
+	RouteGroups  []RouteGroupConfig `json:"route_groups"`
 }
 
 // Load 从文件加载配置
