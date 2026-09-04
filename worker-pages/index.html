@@ -103,7 +103,7 @@
     <form method="dialog" class="modal stack" id="providerForm">
       <div class="section-title">
         <h2 id="dialogTitle">Provider</h2>
-        <button class="ghost" value="cancel" type="submit">关闭</button>
+        <button class="ghost" type="button" data-close-dialog="providerDialog">关闭</button>
       </div>
       <input id="editingName" type="hidden" />
       <label>名称
@@ -139,11 +139,11 @@
     <form method="dialog" class="modal stack" id="routeGroupForm">
       <div class="section-title">
         <h2 id="routeGroupDialogTitle">新建路由分组</h2>
-        <button class="ghost" value="cancel" type="submit">关闭</button>
+        <button class="ghost" type="button" data-close-dialog="routeGroupDialog">关闭</button>
       </div>
       <input id="editingRouteGroupName" type="hidden" />
       <label>分组名称
-        <input id="routeGroupName" required placeholder="smart-model" />
+        <input id="routeGroupName" required pattern="[^/]+" title="分组名称不能包含 '/'" placeholder="smart-model" />
       </label>
       <label class="checkline"><input id="routeGroupAutoRetry" type="checkbox" /> 启用自动重试（最多切换 3 个其他 Provider）</label>
       <div class="member-editor">

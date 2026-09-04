@@ -138,6 +138,12 @@ func (s *Store) SeedFromConfig(providers []config.ProviderConfig) error {
 
 func (s *Store) SeedRouteGroups(groups []config.RouteGroupConfig) error {
 	for _, g := range groups {
+		if strings.TrimSpace(g.Name) == "" {
+			return fmt.Errorf("路由分组名称不能为空")
+		}
+		if strings.Contains(g.Name, "/") {
+			return fmt.Errorf("路由分组 %s 的名称禁止包含 '/'", g.Name)
+		}
 		members, err := json.Marshal(g.Members)
 		if err != nil {
 			return fmt.Errorf("编码路由分组 %s 失败: %w", g.Name, err)
@@ -172,6 +178,7 @@ func (s *Store) SaveRouteGroup(name string, members []RouteGroupMember, autoRetr
 	if err := s.db.Create(&row).Error; err != nil {
 		return fmt.Errorf("新增路由分组 %s 失败: %w", name, err)
 	}
+	s.invalidateCache()
 	return nil
 }
 func (s *Store) UpdateRouteGroup(name string, members []RouteGroupMember, autoRetry bool) error {
@@ -186,6 +193,7 @@ func (s *Store) UpdateRouteGroup(name string, members []RouteGroupMember, autoRe
 	if result.RowsAffected == 0 {
 		return fmt.Errorf("路由分组 '%s' 不存在", name)
 	}
+	s.invalidateCache()
 	return nil
 }
 func (s *Store) DeleteRouteGroup(name string) error {
@@ -196,6 +204,7 @@ func (s *Store) DeleteRouteGroup(name string) error {
 	if result.RowsAffected == 0 {
 		return fmt.Errorf("路由分组 '%s' 不存在", name)
 	}
+	s.invalidateCache()
 	return nil
 }
 func (s *Store) GroupMembers(row *RouteGroup) ([]RouteGroupMember, error) {
@@ -253,6 +262,19 @@ func (s *Store) GetAllModels() ([]ModelEntry, error) {
 				OwnedBy:  p.Name,
 			})
 		}
+	}
+
+	groups, err := s.ListRouteGroups()
+	if err != nil {
+		return nil, err
+	}
+	for _, group := range groups {
+		models = append(models, ModelEntry{
+			ID:       group.Name,
+			Object:   "model",
+			Created:  group.CreatedAt.Unix(),
+			OwnedBy:  group.Name,
+		})
 	}
 
 	s.modelsCache = models

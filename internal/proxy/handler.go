@@ -760,8 +760,12 @@ func (h *Handler) handleAdminAddRouteGroup(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, errorResponse("请求体解析失败: "+err.Error()))
 		return
 	}
-	if strings.TrimSpace(req.Name) == "" || len(req.Members) == 0 {
-		c.JSON(http.StatusBadRequest, errorResponse("name 和 members 不能为空"))
+	if err := validateRouteGroupName(req.Name); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse(err.Error()))
+		return
+	}
+	if len(req.Members) == 0 {
+		c.JSON(http.StatusBadRequest, errorResponse("members 不能为空"))
 		return
 	}
 	if existing, err := h.manager.GetStore().GetRouteGroup(req.Name); err != nil {
@@ -789,11 +793,26 @@ func (h *Handler) handleAdminUpdateRouteGroup(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, errorResponse("members 不能为空"))
 		return
 	}
+	if strings.Contains(name, "/") {
+		c.JSON(http.StatusBadRequest, errorResponse("路由分组名称禁止包含 '/'"))
+		return
+	}
 	if err := h.manager.GetStore().UpdateRouteGroup(name, req.Members, req.AutoRetry); err != nil {
 		c.JSON(http.StatusNotFound, errorResponse(err.Error()))
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "路由分组更新成功"})
+}
+
+func validateRouteGroupName(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("分组名称不能为空")
+	}
+	if strings.Contains(name, "/") {
+		return fmt.Errorf("路由分组名称禁止包含 '/'")
+	}
+	return nil
 }
 
 func (h *Handler) handleAdminDeleteRouteGroup(c *gin.Context) {
