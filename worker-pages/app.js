@@ -118,12 +118,30 @@ function addRouteGroupMember(member = {}) {
       <option value="">选择 Provider</option>
       ${state.providers.filter((item) => item.enabled).map((provider) => `<option value="${escapeAttr(provider.name)}">${escapeHtml(provider.name)}</option>`).join('')}
     </select>
-    <input class="group-model" placeholder="下级模型名称，如 gpt-4o" value="${escapeAttr(member.model || '')}" />
+    <select class="group-model" aria-label="模型">
+      <option value="">先选择 Provider</option>
+    </select>
     <button class="ghost remove-member" type="button" aria-label="删除成员">移除</button>
   `;
-  row.querySelector('.group-provider').value = member.provider || '';
+  const providerSelect = row.querySelector('.group-provider');
+  const modelSelect = row.querySelector('.group-model');
+  providerSelect.value = member.provider || '';
+  updateRouteGroupModelOptions(providerSelect, modelSelect, member.model || '');
+  providerSelect.addEventListener('change', () => updateRouteGroupModelOptions(providerSelect, modelSelect));
   row.querySelector('.remove-member').addEventListener('click', () => row.remove());
   $('routeGroupMembers').appendChild(row);
+}
+
+function updateRouteGroupModelOptions(providerSelect, modelSelect, selectedModel = '') {
+  const provider = state.providers.find((item) => item.name === providerSelect.value);
+  const models = provider?.models || [];
+  modelSelect.innerHTML = models.length
+    ? '<option value="">选择模型</option>' + models.map((model) => `<option value="${escapeAttr(model)}">${escapeHtml(model)}</option>`).join('')
+    : '<option value="">该 Provider 暂无模型</option>';
+  if (selectedModel && !models.includes(selectedModel)) {
+    modelSelect.insertAdjacentHTML('beforeend', `<option value="${escapeAttr(selectedModel)}">${escapeHtml(selectedModel)}（当前配置）</option>`);
+  }
+  modelSelect.value = selectedModel;
 }
 
 async function saveRouteGroup(event) {
