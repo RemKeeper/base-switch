@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"baseSwitch/internal/config"
+	"baseSwitch/internal/provider"
 	"baseSwitch/internal/storage"
 )
 
@@ -113,12 +115,12 @@ func TestForwardNonStreamCandidatesRetriesAtMostThreeTimes(t *testing.T) {
 	defer server.Close()
 
 	h := NewHandler(nil, &config.AuthConfig{}, &config.ManagementConfig{}, nil)
-	candidates := make([]*storage.Provider, 5)
+	candidates := make([]chatCandidate, 5)
 	for i := range candidates {
-		candidates[i] = &storage.Provider{Name: "p", BaseURL: server.URL, Models: "model"}
+		candidates[i] = chatCandidate{provider: &storage.Provider{Name: "p", BaseURL: server.URL}, model: "model"}
 	}
 	recorder := httptest.NewRecorder()
-	h.forwardNonStreamCandidates(recorder, candidates, "model", "/v1/chat/completions", []byte(`{"model":"group"}`))
+	h.forwardNonStreamCandidates(recorder, candidates, "/v1/chat/completions", []byte(`{"model":"group"}`))
 	if requests != 4 {
 		t.Fatalf("requests = %d, want 4 (initial + 3 retries)", requests)
 	}
@@ -142,9 +144,45 @@ func TestForwardNonStreamCandidatesUsesMemberModel(t *testing.T) {
 	defer server.Close()
 	h := NewHandler(nil, &config.AuthConfig{}, &config.ManagementConfig{}, nil)
 	recorder := httptest.NewRecorder()
-	h.forwardNonStreamCandidates(recorder, []*storage.Provider{{Name: "p", BaseURL: server.URL, Models: "actual-model"}}, "actual-model", "/v1/chat/completions", []byte(`{"model":"group"}`))
+	h.forwardNonStreamCandidates(recorder, []chatCandidate{{provider: &storage.Provider{Name: "p", BaseURL: server.URL}, model: "actual-model"}}, "/v1/chat/completions", []byte(`{"model":"group"}`))
 	if !strings.Contains(recorder.Body.String(), `"ok":true`) {
 		t.Fatalf("body = %s", recorder.Body.String())
+	}
+}
+
+func TestHandleChatCompletionsUsesResolvedModelNotProviderList(t *testing.T) {
+	var gotModel string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		gotModel, _ = body["model"].(string)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"ok"}`))
+	}))
+	defer upstream.Close()
+
+	store, err := storage.New(filepath.Join(t.TempDir(), "providers.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.InsertProvider("agnes", "openai", upstream.URL, "sk-test", "", []string{"gpt-4o", "gpt-4o-mini", "claude-3"}, true); err != nil {
+		t.Fatal(err)
+	}
+
+	h := NewHandler(provider.NewManager(store), &config.AuthConfig{}, &config.ManagementConfig{}, nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"agnes/gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if gotModel != "gpt-4o" {
+		t.Fatalf("upstream model = %q, want gpt-4o (must not send provider model list)", gotModel)
 	}
 }
 

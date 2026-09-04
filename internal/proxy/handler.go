@@ -242,18 +242,25 @@ func (h *Handler) HandleChatCompletions(c *gin.Context) {
 		return
 	}
 	log.Printf("[PROXY] %s -> %s/%s (stream=%v)", chatReq.Model, prov.Name, actualModel, chatReq.Stream)
-	newBody := h.rewriteModelField(bodyBytes, actualModel)
+	newBody := bodyBytes
 	if chatReq.Stream {
 		newBody = h.ensureStreamUsageOption(newBody)
 	}
 	if chatReq.Stream {
-		h.forwardStreamCandidates(c.Writer, candidates, actualModel, c.Request.URL.Path, newBody)
+		h.forwardStreamCandidates(c.Writer, candidates, c.Request.URL.Path, newBody)
 		return
 	}
-	h.forwardNonStreamCandidates(c.Writer, candidates, actualModel, c.Request.URL.Path, newBody)
+	h.forwardNonStreamCandidates(c.Writer, candidates, c.Request.URL.Path, newBody)
 }
 
-func (h *Handler) resolveChatTarget(modelID string) (*storage.Provider, string, *storage.RouteGroup, []*storage.Provider, error) {
+// chatCandidate 表示一次上游转发的目标：具体 Provider + 该次应发送的单个模型名。
+// 不能复用 Provider.Models，那个字段存的是逗号分隔的全部模型列表。
+type chatCandidate struct {
+	provider *storage.Provider
+	model    string
+}
+
+func (h *Handler) resolveChatTarget(modelID string) (*storage.Provider, string, *storage.RouteGroup, []chatCandidate, error) {
 	group, members, err := h.manager.ResolveRouteGroup(modelID)
 	if err != nil {
 		return nil, "", nil, nil, err
@@ -263,14 +270,13 @@ func (h *Handler) resolveChatTarget(modelID string) (*storage.Provider, string, 
 		if err != nil {
 			return nil, "", nil, nil, err
 		}
-		return p, model, nil, []*storage.Provider{p}, nil
+		return p, model, nil, []chatCandidate{{provider: p, model: model}}, nil
 	}
 	if len(members) == 0 {
 		return nil, "", nil, nil, fmt.Errorf("路由分组 '%s' 没有成员", modelID)
 	}
 	start := rand.New(rand.NewSource(time.Now().UnixNano())).Intn(len(members))
-	candidates := make([]*storage.Provider, 0, len(members))
-	actualModel := ""
+	candidates := make([]chatCandidate, 0, len(members))
 	for i := 0; i < len(members); i++ {
 		member := members[(start+i)%len(members)]
 		p, lookupErr := h.manager.GetProviderByName(member.Provider)
@@ -280,12 +286,7 @@ func (h *Handler) resolveChatTarget(modelID string) (*storage.Provider, string, 
 		if p == nil || !p.Enabled {
 			continue
 		}
-		if actualModel == "" {
-			actualModel = member.Model
-		}
-		copyP := *p
-		copyP.Models = member.Model
-		candidates = append(candidates, &copyP)
+		candidates = append(candidates, chatCandidate{provider: p, model: member.Model})
 	}
 	if len(candidates) == 0 {
 		return nil, "", nil, nil, fmt.Errorf("路由分组 '%s' 没有可用 Provider", modelID)
@@ -293,18 +294,19 @@ func (h *Handler) resolveChatTarget(modelID string) (*storage.Provider, string, 
 	if !group.AutoRetry && len(candidates) > 1 {
 		candidates = candidates[:1]
 	}
-	return candidates[0], actualModel, group, candidates, nil
+	return candidates[0].provider, candidates[0].model, group, candidates, nil
 }
 
-func (h *Handler) forwardNonStreamCandidates(w http.ResponseWriter, candidates []*storage.Provider, model, endpoint string, body []byte) {
+func (h *Handler) forwardNonStreamCandidates(w http.ResponseWriter, candidates []chatCandidate, endpoint string, body []byte) {
 	max := len(candidates)
 	if max > 4 {
 		max = 4
 	} // 首选 + 最多 3 次重试
 	var lastErr error
 	for i := 0; i < max; i++ {
-		p := candidates[i]
-		candidateBody := h.rewriteModelField(body, p.Models)
+		candidate := candidates[i]
+		p := candidate.provider
+		candidateBody := h.rewriteModelField(body, candidate.model)
 		resp, err := h.providerClient(p.ProxyURL).R().SetHeader("Authorization", "Bearer "+p.APIKey).SetBodyJsonBytes(candidateBody).Post(strings.TrimRight(p.BaseURL, "/") + "/v1/chat/completions")
 		if err == nil && resp.IsSuccessState() {
 			defer resp.Body.Close()
@@ -312,7 +314,7 @@ func (h *Handler) forwardNonStreamCandidates(w http.ResponseWriter, candidates [
 			w.WriteHeader(resp.StatusCode)
 			data := resp.Bytes()
 			_, _ = w.Write(data)
-			h.recordTokenUsage(p.Name, model, endpoint, tokenusage.ExtractUsageFromJSON(data))
+			h.recordTokenUsage(p.Name, candidate.model, endpoint, tokenusage.ExtractUsageFromJSON(data))
 			return
 		}
 		if resp != nil {
@@ -326,17 +328,18 @@ func (h *Handler) forwardNonStreamCandidates(w http.ResponseWriter, candidates [
 	http.Error(w, fmt.Sprintf(`{"error":{"message":"上游请求失败: %v"}}`, lastErr), http.StatusBadGateway)
 }
 
-func (h *Handler) forwardStreamCandidates(w http.ResponseWriter, candidates []*storage.Provider, model, endpoint string, body []byte) {
+func (h *Handler) forwardStreamCandidates(w http.ResponseWriter, candidates []chatCandidate, endpoint string, body []byte) {
 	max := len(candidates)
 	if max > 4 {
 		max = 4
 	}
 	for i := 0; i < max; i++ {
-		p := candidates[i]
-		candidateBody := h.rewriteModelField(body, p.Models)
+		candidate := candidates[i]
+		p := candidate.provider
+		candidateBody := h.rewriteModelField(body, candidate.model)
 		resp, err := h.providerClient(p.ProxyURL).R().SetHeader("Authorization", "Bearer "+p.APIKey).SetBodyJsonBytes(candidateBody).DisableAutoReadResponse().Post(strings.TrimRight(p.BaseURL, "/") + "/v1/chat/completions")
 		if err == nil && resp.IsSuccessState() {
-			h.forwardStreamResponse(w, p.Name, model, endpoint, resp)
+			h.forwardStreamResponse(w, p.Name, candidate.model, endpoint, resp)
 			return
 		}
 		if resp != nil {
