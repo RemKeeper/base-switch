@@ -20,6 +20,9 @@ function init() {
   $('addRouteGroupMember').addEventListener('click', () => addRouteGroupMember());
   $('deleteRouteGroup').addEventListener('click', deleteRouteGroup);
   $('deleteProvider').addEventListener('click', deleteProvider);
+  document.querySelectorAll('[data-close-dialog]').forEach((button) => {
+    button.addEventListener('click', () => $(button.dataset.closeDialog).close());
+  });
   $('checkModels').addEventListener('click', checkModels);
   $('loadUsage').addEventListener('click', loadUsage);
   if (state.apiBase && state.adminKey) refreshAll();
