@@ -806,6 +806,7 @@ func (h *Handler) handleAdminDeleteRouteGroup(c *gin.Context) {
 
 type AdminModelCheckRequest struct {
 	Provider       string   `json:"provider"`
+	Group          string   `json:"group"`
 	Models         []string `json:"models"`
 	Prompt         string   `json:"prompt"`
 	TimeoutSeconds int      `json:"timeout_seconds"`
@@ -1034,14 +1035,35 @@ func (h *Handler) handleAdminCheckModels(c *gin.Context) {
 		prompt = "ping"
 	}
 
-	providers, err := h.providersForModelCheck(strings.TrimSpace(req.Provider))
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, errorResponse("获取 Provider 失败: "+err.Error()))
-		return
-	}
-	if len(providers) == 0 {
-		c.JSON(http.StatusNotFound, errorResponse("没有可检测的 Provider"))
-		return
+	groupName := strings.TrimSpace(req.Group)
+	var groupMembers []storage.RouteGroupMember
+	var providers []storage.Provider
+	if groupName != "" {
+		group, members, err := h.manager.ResolveRouteGroup(groupName)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, errorResponse("获取路由分组失败: "+err.Error()))
+			return
+		}
+		if group == nil {
+			c.JSON(http.StatusNotFound, errorResponse("路由分组 '"+groupName+"' 不存在"))
+			return
+		}
+		if len(members) == 0 {
+			c.JSON(http.StatusBadRequest, errorResponse("路由分组 '"+groupName+"' 没有可检测的成员"))
+			return
+		}
+		groupMembers = members
+	} else {
+		var err error
+		providers, err = h.providersForModelCheck(strings.TrimSpace(req.Provider))
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, errorResponse("获取 Provider 失败: "+err.Error()))
+			return
+		}
+		if len(providers) == 0 {
+			c.JSON(http.StatusNotFound, errorResponse("没有可检测的 Provider"))
+			return
+		}
 	}
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
@@ -1062,6 +1084,33 @@ func (h *Handler) handleAdminCheckModels(c *gin.Context) {
 	c.Header("X-Accel-Buffering", "no")
 	c.Status(http.StatusOK)
 	encoder := json.NewEncoder(c.Writer)
+	if groupName != "" {
+		for _, member := range groupMembers {
+			result := AdminModelCheckResult{
+				Provider: member.Provider,
+				Model:    member.Model,
+				ModelID:  member.Provider + "/" + member.Model,
+			}
+			p, err := h.manager.GetProviderByName(member.Provider)
+			if err != nil {
+				result.Error = err.Error()
+			} else if p == nil {
+				result.Error = "Provider 不存在"
+			} else if !p.Enabled {
+				result.Error = "Provider 已禁用"
+			} else {
+				result = h.checkSingleModel(c.Request.Context(), *p, member.Model, prompt, timeoutSeconds)
+			}
+			if err := encoder.Encode(result); err != nil {
+				return
+			}
+			flusher.Flush()
+			if c.Request.Context().Err() != nil {
+				return
+			}
+		}
+		return
+	}
 
 	for _, p := range providers {
 		if !p.Enabled {
@@ -1373,6 +1422,7 @@ func openAPISchemas() gin.H {
 			"type": "object",
 			"properties": gin.H{
 				"provider":        gin.H{"type": "string", "description": "可选，仅检测指定 Provider", "example": "openai"},
+				"group":           gin.H{"type": "string", "description": "可选，检测指定路由分组的全部成员；设置后优先于 provider 和 models", "example": "smart-model"},
 				"models":          gin.H{"type": "array", "items": gin.H{"type": "string"}, "description": "可选，支持模型名或 Provider/model", "example": []string{"openai/gpt-4o"}},
 				"prompt":          gin.H{"type": "string", "description": "可选，探活提示词", "example": "ping"},
 				"timeout_seconds": gin.H{"type": "integer", "description": "单模型超时时间，默认 20，最大 120", "example": 20},

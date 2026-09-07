@@ -224,3 +224,67 @@ func TestCheckSingleModelRetriesWhenAnthropicRequires1MContext(t *testing.T) {
 		t.Fatalf("unexpected result: %#v", result)
 	}
 }
+
+func TestHandleAdminCheckModelsTestsRouteGroupMembers(t *testing.T) {
+	requests := make(map[string]int)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		model, _ := body["model"].(string)
+		requests[model]++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	store, err := storage.New(filepath.Join(t.TempDir(), "providers.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	for _, item := range []struct{ name, model string }{
+		{"provider-a", "model-a"},
+		{"provider-b", "model-b"},
+	} {
+		if err := store.InsertProvider(item.name, "openai", upstream.URL, "sk-test", "", []string{item.model}, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.SaveRouteGroup("test-group", []storage.RouteGroupMember{
+		{Provider: "provider-a", Model: "model-a"},
+		{Provider: "provider-b", Model: "model-b"},
+	}, true); err != nil {
+		t.Fatal(err)
+	}
+
+	h := NewHandler(provider.NewManager(store), &config.AuthConfig{}, &config.ManagementConfig{Enabled: true, Keys: []string{"admin-key"}}, nil)
+	req := httptest.NewRequest(http.MethodPost, "/admin/models/check", strings.NewReader(`{"group":"test-group","provider":"ignored","models":["ignored/model"],"timeout_seconds":5}`))
+	req.Header.Set("Authorization", "Bearer admin-key")
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	h.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var results []AdminModelCheckResult
+	decoder := json.NewDecoder(recorder.Body)
+	for decoder.More() {
+		var result AdminModelCheckResult
+		if err := decoder.Decode(&result); err != nil {
+			t.Fatal(err)
+		}
+		results = append(results, result)
+	}
+	if len(results) != 2 {
+		t.Fatalf("result count = %d, want 2; body = %s", len(results), recorder.Body.String())
+	}
+	if !results[0].Alive || results[0].ModelID != "provider-a/model-a" || !results[1].Alive || results[1].ModelID != "provider-b/model-b" {
+		t.Fatalf("unexpected results: %#v", results)
+	}
+	if requests["model-a"] != 1 || requests["model-b"] != 1 {
+		t.Fatalf("upstream requests = %#v, want one request per group member", requests)
+	}
+}

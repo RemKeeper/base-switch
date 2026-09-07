@@ -79,11 +79,14 @@
           <label>Provider
             <select id="checkProvider"><option value="">全部启用 Provider</option></select>
           </label>
+          <label>路由分组
+            <select id="checkGroup"><option value="">不选择分组</option></select>
+          </label>
           <label>超时秒数
             <input id="timeoutSeconds" type="number" min="1" max="120" value="20" />
           </label>
         </div>
-        <label>指定模型（可选，每行一个，支持 Provider/model）
+        <label>指定模型（可选，每行一个，支持 Provider/model；选择分组后自动测试分组成员）
           <textarea id="checkModelsInput" rows="4" placeholder="openai/gpt-4o"></textarea>
         </label>
         <div id="checkResults" class="result-list"></div>

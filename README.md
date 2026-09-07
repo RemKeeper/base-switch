@@ -152,7 +152,7 @@ go build -o baseSwitch .
 | `PUT` | `/admin/providers/:name` | 更新指定 Provider |
 | `DELETE` | `/admin/providers/:name` | 删除指定 Provider |
 | `POST` | `/admin/providers/:name/refresh-models` | 手动刷新指定 Provider 模型列表 |
-| `POST` | `/admin/models/check` | 流式检测模型存活状态，返回 NDJSON |
+| `POST` | `/admin/models/check` | 流式检测模型存活状态，返回 NDJSON；可通过 `group` 测试路由分组全部成员 |
 | `GET` | `/admin/usage/summary` | 查询 token 消耗聚合统计 |
 | `GET` | `/admin/usage/records` | 查询 token 消耗明细记录 |
 
@@ -182,6 +182,15 @@ curl -X POST http://localhost:28080/admin/models/check \
     "models": ["example-provider/gpt-4o"],
     "timeout_seconds": 20
   }'
+```
+
+按路由分组测试其中每个 Provider/Model 成员：
+
+```bash
+curl -X POST http://localhost:28080/admin/models/check \
+  -H "Authorization: Bearer sk-admin-management-key" \
+  -H "Content-Type: application/json" \
+  -d '{"group":"smart-model","timeout_seconds":20}'
 ```
 
 ### Token 用量统计

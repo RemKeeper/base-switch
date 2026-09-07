@@ -74,6 +74,14 @@ async function loadRouteGroups() {
 
 function renderRouteGroups() {
   const node = $('routeGroupsList');
+  const groupSelect = $('checkGroup');
+  if (groupSelect) {
+    const selected = groupSelect.value;
+    groupSelect.innerHTML = '<option value="">不选择分组</option>' + state.routeGroups
+      .map((group) => `<option value="${escapeAttr(group.name)}">${escapeHtml(group.name)}</option>`)
+      .join('');
+    groupSelect.value = state.routeGroups.some((group) => group.name === selected) ? selected : '';
+  }
   if (!state.routeGroups.length) {
     node.innerHTML = '<div class="empty-state">暂无路由分组，点击“新建分组”开始配置。</div>';
     return;
@@ -307,6 +315,7 @@ async function checkModels() {
         'Authorization': `Bearer ${state.adminKey}`
       },
       body: JSON.stringify({
+        group: $('checkGroup').value,
         provider: $('checkProvider').value,
         models: lines($('checkModelsInput').value),
         timeout_seconds: Number($('timeoutSeconds').value || 20)
