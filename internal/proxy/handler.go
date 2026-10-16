@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"baseSwitch/internal/config"
@@ -23,12 +25,13 @@ import (
 
 // Handler 反向代理处理器
 type Handler struct {
-	manager  *provider.Manager
-	client   *req.Client
-	auth     *config.AuthConfig       // 前置鉴权配置
-	mgmtAuth *config.ManagementConfig // 管理 API 鉴权配置
-	usage    *tokenusage.Plugin
-	router   *gin.Engine
+	manager      *provider.Manager
+	client       *req.Client
+	auth         *config.AuthConfig       // 前置鉴权配置
+	mgmtAuth     *config.ManagementConfig // 管理 API 鉴权配置
+	usage        *tokenusage.Plugin
+	router       *gin.Engine
+	proxyClients sync.Map
 }
 
 // NewHandler 创建代理处理器，启用 Chrome 指纹伪装
@@ -307,22 +310,30 @@ func (h *Handler) forwardNonStreamCandidates(w http.ResponseWriter, candidates [
 		candidate := candidates[i]
 		p := candidate.provider
 		candidateBody := h.rewriteModelField(body, candidate.model)
-		resp, err := h.providerClient(p.ProxyURL).R().SetHeader("Authorization", "Bearer "+p.APIKey).SetBodyJsonBytes(candidateBody).Post(strings.TrimRight(p.BaseURL, "/") + "/v1/chat/completions")
-		if err == nil && resp.IsSuccessState() {
-			defer resp.Body.Close()
-			copyUpstreamHeaders(w, resp.Header)
-			w.WriteHeader(resp.StatusCode)
+		resp, err := h.postChat(p, candidate.model, candidateBody, false)
+		if err == nil && resp != nil && resp.IsSuccessState() {
 			data := resp.Bytes()
+			if normalizeAPIType(p.APIType) == "anthropic" {
+				converted, convErr := anthropicMessageToOpenAI(data)
+				resp.Body.Close()
+				if convErr != nil {
+					lastErr = convErr
+					log.Printf("[WARN] Provider %s Anthropic 响应转换失败: %v", p.Name, convErr)
+					continue
+				}
+				data = converted
+			} else {
+				copyUpstreamHeaders(w, resp.Header)
+				resp.Body.Close()
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(resp.StatusCode)
 			_, _ = w.Write(data)
 			h.recordTokenUsage(p.Name, candidate.model, endpoint, tokenusage.ExtractUsageFromJSON(data))
 			return
 		}
-		if resp != nil {
-			lastErr = fmt.Errorf("%s 返回 HTTP %d", p.Name, resp.StatusCode)
-			resp.Body.Close()
-		} else {
-			lastErr = err
-		}
+		lastErr = upstreamFailure(p.Name, resp, err)
+		closeUpstream(resp)
 		log.Printf("[WARN] Provider %s 请求失败，准备切换候选: %v", p.Name, lastErr)
 	}
 	http.Error(w, fmt.Sprintf(`{"error":{"message":"上游请求失败: %v"}}`, lastErr), http.StatusBadGateway)
@@ -337,16 +348,78 @@ func (h *Handler) forwardStreamCandidates(w http.ResponseWriter, candidates []ch
 		candidate := candidates[i]
 		p := candidate.provider
 		candidateBody := h.rewriteModelField(body, candidate.model)
-		resp, err := h.providerClient(p.ProxyURL).R().SetHeader("Authorization", "Bearer "+p.APIKey).SetBodyJsonBytes(candidateBody).DisableAutoReadResponse().Post(strings.TrimRight(p.BaseURL, "/") + "/v1/chat/completions")
-		if err == nil && resp.IsSuccessState() {
-			h.forwardStreamResponse(w, p.Name, candidate.model, endpoint, resp)
+		resp, err := h.postChat(p, candidate.model, candidateBody, true)
+		if err == nil && resp != nil && resp.IsSuccessState() {
+			if normalizeAPIType(p.APIType) == "anthropic" {
+				h.forwardAnthropicStream(w, p.Name, candidate.model, endpoint, resp)
+			} else {
+				h.forwardStreamResponse(w, p.Name, candidate.model, endpoint, resp)
+			}
 			return
 		}
-		if resp != nil {
-			resp.Body.Close()
-		}
+		closeUpstream(resp)
 	}
 	http.Error(w, `{"error":{"message":"上游请求失败"}}`, http.StatusBadGateway)
+}
+
+func (h *Handler) postChat(p *storage.Provider, model string, body []byte, stream bool) (*req.Response, error) {
+	if normalizeAPIType(p.APIType) != "anthropic" {
+		request := h.providerClient(p.ProxyURL).R().SetHeader("Authorization", "Bearer "+p.APIKey).SetBodyJsonBytes(body)
+		if stream {
+			request.DisableAutoReadResponse()
+		}
+		return request.Post(strings.TrimRight(p.BaseURL, "/") + "/v1/chat/completions")
+	}
+
+	anthBody, err := openAIChatToAnthropic(body, model)
+	if err != nil {
+		return nil, err
+	}
+	use1M := anthropicModelUses1MContext(model)
+	resp, err := h.postAnthropicMessages(p, anthBody, use1M, stream)
+	if err != nil || use1M || resp == nil || resp.IsSuccessState() {
+		return resp, err
+	}
+	if !responseAsksFor1M(resp) {
+		return resp, nil
+	}
+	resp.Body.Close()
+	log.Printf("[PROXY] %s/%s 要求启用 1m 上下文，正在重试", p.Name, model)
+	return h.postAnthropicMessages(p, anthBody, true, stream)
+}
+
+func (h *Handler) postAnthropicMessages(p *storage.Provider, body []byte, use1MContext, stream bool) (*req.Response, error) {
+	request := h.providerClient(p.ProxyURL).R().
+		SetHeader("x-api-key", p.APIKey).
+		SetHeader("Authorization", "Bearer "+p.APIKey).
+		SetHeader("anthropic-version", "2023-06-01").
+		SetBodyJsonBytes(body)
+	if use1MContext {
+		request.SetHeader("anthropic-beta", "context-1m-2025-08-07")
+	}
+	if stream {
+		request.DisableAutoReadResponse()
+	}
+	return request.Post(strings.TrimRight(p.BaseURL, "/") + "/v1/messages")
+}
+
+func (h *Handler) forwardAnthropicStream(w http.ResponseWriter, providerName, modelName, endpoint string, resp *req.Response) {
+	defer resp.Body.Close()
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	flusher, _ := w.(http.Flusher)
+	var capture bytes.Buffer
+	err := translateAnthropicSSE(resp.Body, io.MultiWriter(w, &capture), modelName, func() {
+		if flusher != nil {
+			flusher.Flush()
+		}
+	})
+	if err != nil && err != io.EOF {
+		log.Printf("[ERROR] 转换 Anthropic 流式响应失败: %v", err)
+	}
+	h.recordTokenUsage(providerName, modelName, endpoint, tokenusage.ExtractUsageFromSSE(capture.Bytes()))
 }
 
 func (h *Handler) forwardStreamResponse(w http.ResponseWriter, providerName, modelName, endpoint string, resp *req.Response) {
@@ -1220,8 +1293,44 @@ func (h *Handler) sendModelCheckRequest(ctx context.Context, p storage.Provider,
 		Post(strings.TrimRight(p.BaseURL, "/") + "/v1/chat/completions")
 }
 
+func upstreamFailure(name string, resp *req.Response, err error) error {
+	if resp != nil && resp.Response != nil {
+		if err != nil {
+			return fmt.Errorf("%s 返回 HTTP %d: %v", name, resp.StatusCode, err)
+		}
+		return fmt.Errorf("%s 返回 HTTP %d", name, resp.StatusCode)
+	}
+	if err != nil {
+		return fmt.Errorf("%s: %v", name, err)
+	}
+	return fmt.Errorf("%s 没有返回响应", name)
+}
+
+func closeUpstream(resp *req.Response) {
+	if resp == nil || resp.Response == nil || resp.Body == nil {
+		return
+	}
+	resp.Body.Close()
+}
+
 func anthropicResponseRequires1MContext(resp *req.Response) bool {
 	return resp != nil && !resp.IsSuccessState() && strings.Contains(strings.ToLower(resp.String()), "1m 上下文")
+}
+
+// responseAsksFor1M 判断上游是否要求补上 1m beta。流式请求关闭了自动读 body，需要主动读一次错误响应。
+func responseAsksFor1M(resp *req.Response) bool {
+	if resp == nil || resp.IsSuccessState() {
+		return false
+	}
+	body := resp.String()
+	if body == "" {
+		read, err := resp.ToString()
+		if err != nil {
+			return false
+		}
+		body = read
+	}
+	return strings.Contains(strings.ToLower(body), "1m 上下文")
 }
 
 func truncateForResponse(value string, maxLen int) string {
@@ -1237,7 +1346,19 @@ func (h *Handler) providerClient(proxyURL string) *req.Client {
 	if proxyURL == "" {
 		return h.client
 	}
-	return h.client.Clone().SetProxyURL(proxyURL)
+	if cached, ok := h.proxyClients.Load(proxyURL); ok {
+		return cached.(*req.Client)
+	}
+	// Clone 不会带走 uTLS 指纹，经代理访问时 Cloudflare 会直接断开。
+	// 按代理地址单独建一个带 Chrome 指纹的客户端。
+	client := req.C().
+		ImpersonateChrome().
+		SetTimeout(5*time.Minute).
+		SetCommonHeader("Content-Type", "application/json").
+		SetCommonHeader("Accept", "application/json, text/event-stream, */*").
+		SetProxyURL(proxyURL)
+	actual, _ := h.proxyClients.LoadOrStore(proxyURL, client)
+	return actual.(*req.Client)
 }
 
 func validateProviderRequest(req AdminProviderRequest, requireName bool) error {
@@ -1545,7 +1666,10 @@ func (h *Handler) FetchProviderModels(apiType, baseURL, apiKey, proxyURL string)
 	targetURL := strings.TrimRight(baseURL, "/") + "/v1/models"
 	request := h.providerClient(proxyURL).R()
 	if normalizeAPIType(apiType) == "anthropic" {
-		request.SetHeader("x-api-key", apiKey).SetHeader("anthropic-version", "2023-06-01")
+		// new-api 系网关的 /v1/models 只认 Authorization，官方 Anthropic 只认 x-api-key，两个都带上。
+		request.SetHeader("x-api-key", apiKey).
+			SetHeader("anthropic-version", "2023-06-01").
+			SetHeader("Authorization", "Bearer "+apiKey)
 	} else {
 		request.SetHeader("Authorization", "Bearer "+apiKey)
 	}
